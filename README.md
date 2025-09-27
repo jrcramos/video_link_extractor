@@ -28,7 +28,7 @@ The extension detects the following media formats:
 
 ## Installation
 
-### From Chrome Web Store (Recommended)
+### From Chrome or edge Web Store (Recommended)
 *Note: This extension may not be published on Chrome Web Store yet*
 
 ### Manual Installation (Developer Mode)
@@ -38,7 +38,7 @@ The extension detects the following media formats:
    - Or download as ZIP and extract
 
 2. **Enable Developer Mode**
-   - Open Chrome and navigate to `chrome://extensions/`
+   - Open Chrome and navigate to `chrome://extensions/` or `edge://extensions/`
    - Toggle "Developer mode" in the top right corner
 
 3. **Load the Extension**
@@ -133,7 +133,7 @@ video_link_extractor/
 
 ### Testing
 
-- Load extension in Chrome with Developer mode
+- Load extension in Chrome or Edge with Developer mode
 - Test on various websites (YouTube, Vimeo, news sites, etc.)
 - Verify all supported formats are detected
 - Check popup functionality and clipboard operations
