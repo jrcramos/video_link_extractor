@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "Video Link Extractor Pro",
+  "version": "3.0",
+  "description": "Automatically detects and lists video/audio links from network requests.",
+  "permissions": [
+    "webRequest",
+    "activeTab",
+    "scripting",
+    "clipboardWrite"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png"
+    }
+  }
+}
