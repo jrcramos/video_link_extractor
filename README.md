@@ -1,6 +1,6 @@
 # Video Link Extractor Pro
 
-A Chrome browser extension that automatically detects and extracts video and audio links from network requests on any webpage. Perfect for downloading media content, analyzing streaming URLs, or archiving multimedia resources.
+A Chromium browser extension that automatically detects and extracts video and audio links from network requests on any webpage. Perfect for downloading media content, analyzing streaming URLs, or archiving multimedia resources.
 
 ## Features
 
