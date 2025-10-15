@@ -1,6 +1,8 @@
 # Video Link Extractor Pro
 
-A Chromium browser extension that automatically detects and extracts video and audio links from network requests on any webpage. Perfect for downloading media content, analyzing streaming URLs, or archiving multimedia resources.
+A browser extension for **Chromium-based browsers** (Chrome, Edge, Brave, Opera, Vivaldi, etc.) that automatically detects and extracts video and audio links from network requests on any webpage. Perfect for downloading media content, analyzing streaming URLs, or archiving multimedia resources.
+
+![Extension Screenshot](https://github.com/user-attachments/assets/972c5ff2-d893-4384-9d81-e86b9c36e2bf)
 
 ## Features
 
@@ -28,7 +30,9 @@ The extension detects the following media formats:
 
 ## Installation
 
-### From Chrome or edge Web Store (Recommended)
+> **Compatible with:** Chrome, Edge, Brave, Opera, Vivaldi, and other Chromium-based browsers
+
+### From Chrome or Edge Web Store (Recommended)
 *Note: This extension may not be published on Chrome Web Store yet*
 
 ### Manual Installation (Developer Mode)
@@ -38,13 +42,17 @@ The extension detects the following media formats:
    - Or download as ZIP and extract
 
 2. **Enable Developer Mode**
-   - Open Chrome and navigate to `chrome://extensions/` or `edge://extensions/`
+   - Open your Chromium browser and navigate to:
+     - Chrome: `chrome://extensions/`
+     - Edge: `edge://extensions/`
+     - Brave: `brave://extensions/`
+     - Opera: `opera://extensions/`
    - Toggle "Developer mode" in the top right corner
 
 3. **Load the Extension**
    - Click "Load unpacked" button
    - Select the extension folder containing `manifest.json`
-   - The extension icon should appear in your Chrome toolbar
+   - The extension icon should appear in your browser toolbar
 
 ## Usage
 
@@ -67,10 +75,10 @@ The extension detects the following media formats:
 
 ### Architecture
 
-- **Background Script** (`background.js`): Monitors network requests using Chrome's webRequest API
+- **Background Script** (`background.js`): Monitors network requests using Chromium's webRequest API
 - **Popup Interface** (`popup.html`, `popup.js`): User interface for displaying and managing links
 - **Content Script** (`content.js`): Handles additional page-specific functionality
-- **Manifest V3**: Uses the latest Chrome extension architecture for security and performance
+- **Manifest V3**: Uses the latest Chromium extension architecture for security and performance
 
 ### Permissions
 
@@ -116,7 +124,7 @@ video_link_extractor/
 2. **No Build Process Required**
    - This is a vanilla JavaScript extension
    - No compilation or bundling needed
-   - Load directly in Chrome Developer mode
+   - Load directly in Chromium browser Developer mode
 
 ### Contributing
 
@@ -127,13 +135,13 @@ video_link_extractor/
    ```
 3. **Make Changes**
    - Follow existing code style
-   - Test thoroughly in Chrome
+   - Test thoroughly in Chromium browsers
    - Update documentation if needed
 4. **Submit Pull Request**
 
 ### Testing
 
-- Load extension in Chrome or Edge with Developer mode
+- Load extension in any Chromium browser (Chrome, Edge, Brave, etc.) with Developer mode
 - Test on various websites (YouTube, Vimeo, news sites, etc.)
 - Verify all supported formats are detected
 - Check popup functionality and clipboard operations
@@ -150,10 +158,10 @@ video_link_extractor/
 - Check if the site uses non-standard streaming methods
 
 **Extension Not Working**
-- Verify Chrome Developer mode is enabled
+- Verify Developer mode is enabled in your Chromium browser
 - Check browser console for errors (`F12` → Console)
-- Try reloading the extension in `chrome://extensions/`
-- Ensure you're using a compatible Chrome version
+- Try reloading the extension in your browser's extensions page
+- Ensure you're using a compatible Chromium browser version
 
 **Links Not Copying**
 - Modern browsers require HTTPS for clipboard access
@@ -166,7 +174,7 @@ Please report bugs or feature requests on GitHub:
 1. Go to [Issues page](https://github.com/jrcramos/video_link_extractor/issues)
 2. Search for existing similar issues
 3. Create a new issue with:
-   - Chrome version
+   - Browser name and version (e.g., Chrome 120, Edge 120, Brave 1.60)
    - Website URL where issue occurs
    - Steps to reproduce
    - Expected vs actual behavior
