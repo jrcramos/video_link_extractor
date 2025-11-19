@@ -2,7 +2,9 @@
 
 A browser extension for **Chromium-based browsers** (Chrome, Edge, Brave, Opera, Vivaldi, etc.) that automatically detects and extracts video and audio links from network requests on any webpage. Perfect for downloading media content, analyzing streaming URLs, or archiving multimedia resources.
 
-![Extension Screenshot](https://github.com/user-attachments/assets/972c5ff2-d893-4384-9d81-e86b9c36e2bf)
+![Extension Screenshot](screenshot-new.png)
+
+*Updated UI with gradient background, full link display (no truncation), and modern styling*
 
 ## Features
 
@@ -189,10 +191,18 @@ Please report bugs or feature requests on GitHub:
 
 ## Version History
 
-- **v3.0**: Current version with Manifest V3 support
-- Improved memory management and tab cleanup
-- Enhanced UI with copy functionality
-- Better error handling
+- **v3.1**: UI/UX Improvements (Current)
+  - Fixed link truncation - links now wrap fully instead of being cut off
+  - Beautiful gradient background (purple theme) instead of plain white
+  - Modern, user-friendly interface with hover effects
+  - New transparent icons without white background
+  - Enhanced visual feedback for copy operations
+  - Improved readability and aesthetics
+  
+- **v3.0**: Manifest V3 support
+  - Improved memory management and tab cleanup
+  - Enhanced UI with copy functionality
+  - Better error handling
 
 ## License
 

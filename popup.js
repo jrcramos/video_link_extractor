@@ -11,7 +11,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // If the links array is empty or doesn't exist, show a helpful message
     if (!links || links.length === 0) {
-      statusEl.textContent = 'No video or audio links found yet. Browse or reload the page.';
+      statusEl.innerHTML = '<div class="empty-state">No video or audio links detected yet.<br>Browse a page with media content or reload.</div>';
       return;
     }
     
@@ -48,9 +48,13 @@ document.addEventListener('DOMContentLoaded', () => {
         // Use the modern Clipboard API to write the link text
         navigator.clipboard.writeText(link).then(() => {
           // Provide visual feedback to the user
-          copyButton.textContent = 'Copied!';
+          copyButton.textContent = '✓ Copied!';
+          copyButton.classList.add('copied');
           // Revert the button text back to "Copy" after 1.5 seconds
-          setTimeout(() => { copyButton.textContent = 'Copy'; }, 1500);
+          setTimeout(() => { 
+            copyButton.textContent = 'Copy';
+            copyButton.classList.remove('copied');
+          }, 1500);
         });
       });
       itemDiv.appendChild(copyButton);
