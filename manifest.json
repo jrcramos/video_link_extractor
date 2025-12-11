@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Video Link Extractor Pro",
-  "version": "3.1",
+  "version": "3.5",
   "description": "Automatically detects and lists video/audio links from network requests.",
   "permissions": [
     "webRequest",

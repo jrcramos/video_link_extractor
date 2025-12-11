@@ -3,25 +3,68 @@
 // A Set automatically handles uniqueness, preventing duplicate links.
 const videoLinks = new Map();
 
-// The improved regex that handles URLs with query parameters.
-const videoRegex = /\.(m3u8|mpd|m3u|webm|gif|mov|avi|m4v|ogv|asf|opus|ts|divx|mpg|rm|mp3|aac|flac|wav|ogg|wmv|m4s|m2ts|mts|f4v|3g2|mpeg|mkv|3gp|vid|flv|mp4)(\?|$)/;
+// STRATEGY 1: REGEX
+// I removed audio formats (mp3, wav, etc) to prevent false positives.
+// Added 'i' flag for case-insensitive matching (captures .MP4).
+const videoRegex = /\.(m3u8|mpd|m3u|webm|gif|mov|avi|m4v|ogv|asf|opus|ts|divx|mpg|rm|mp3|aac|flac|wav|ogg|wmv|m4s|m2ts|mts|f4v|3g2|mpeg|mkv|3gp|vid|flv|mp4)(\?|$)/i;
 
-// Listen for network requests and capture matching URLs.
+// STRATEGY 2: CONTENT-TYPE CHECK
+// We will verify if the server says "This is a video" in the headers.
+const isVideoHeader = (headers) => {
+  if (!headers) return false;
+  
+  for (const header of headers) {
+    if (header.name.toLowerCase() === 'content-type') {
+      const type = header.value.toLowerCase();
+      
+      // Check for standard video types or specific streaming manifests
+      if (
+        type.startsWith('video/') || 
+        type.includes('application/x-mpegurl') || // HLS (m3u8)
+        type.includes('application/vnd.apple.mpegurl') || // HLS alt
+        type.includes('application/dash+xml') // DASH (mpd)
+      ) {
+        return true;
+      }
+    }
+  }
+  return false;
+};
+
+// Helper function to add URL to the Map
+const addLinkToTab = (tabId, url) => {
+  if (tabId < 0 || !url) return;
+  
+  if (!videoLinks.has(tabId)) {
+    videoLinks.set(tabId, new Set());
+  }
+  videoLinks.get(tabId).add(url);
+};
+
+// LISTENER 1: Catch URLs by Extension (Fastest)
 chrome.webRequest.onBeforeRequest.addListener(
   (details) => {
-    if (details.tabId >= 0 && details.url.match(videoRegex)) {
-      // Ensure a Set exists for this tabId.
-      if (!videoLinks.has(details.tabId)) {
-        videoLinks.set(details.tabId, new Set());
-      }
-      // Add the URL to the Set. Duplicates will be ignored automatically.
-      videoLinks.get(details.tabId).add(details.url);
+    if (details.url.match(videoRegex)) {
+      addLinkToTab(details.tabId, details.url);
     }
   },
   { urls: ["<all_urls>"] }
 );
 
-// MEMORY CLEANUP: Listen for when a tab is closed and remove its data.
+// LISTENER 2: Catch URLs by Header (Fallback/More Robust)
+chrome.webRequest.onHeadersReceived.addListener(
+  (details) => {
+    // Only check if we haven't already captured this URL (optimization)
+    // Or just let the Set handle the deduplication.
+    if (isVideoHeader(details.responseHeaders)) {
+      addLinkToTab(details.tabId, details.url);
+    }
+  },
+  { urls: ["<all_urls>"] },
+  ["responseHeaders"] // IMPORTANT: This permission allows us to inspect headers
+);
+
+// MEMORY CLEANUP
 chrome.tabs.onRemoved.addListener((tabId) => {
   if (videoLinks.has(tabId)) {
     videoLinks.delete(tabId);
@@ -29,11 +72,10 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   }
 });
 
-// Listen for messages from the popup.
+// MESSAGE HANDLING
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'getLinks') {
     const links = videoLinks.get(request.tabId);
-    // Convert the Set to an Array before sending.
     sendResponse({ links: links ? Array.from(links) : [] });
   } else if (request.action === 'clearLinks') {
     if (videoLinks.has(request.tabId)) {
@@ -41,5 +83,5 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       sendResponse({ success: true });
     }
   }
-  return true; // Indicates an asynchronous response.
+  return true; 
 });
