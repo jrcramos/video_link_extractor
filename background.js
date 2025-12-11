@@ -4,7 +4,7 @@
 const videoLinks = new Map();
 
 // The improved regex that handles URLs with query parameters.
-const videoRegex = /\.(m3u8|mpd|m3u|webm|gif|mov|avi|m4v|ogv|asf|opus|ts|divx|mpg|rm|mp3|aac|flac|wav|ogg|wmv|mpeg|mkv|3gp|vid|flv|mp4)(\?|$)/;
+const videoRegex = /\.(m3u8|mpd|m3u|webm|gif|mov|avi|m4v|ogv|asf|opus|ts|divx|mpg|rm|mp3|aac|flac|wav|ogg|wmv|m4s|m2ts|mts|f4v|3g2|mpeg|mkv|3gp|vid|flv|mp4)(\?|$)/;
 
 // Listen for network requests and capture matching URLs.
 chrome.webRequest.onBeforeRequest.addListener(
