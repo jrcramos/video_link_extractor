@@ -9,7 +9,7 @@ A browser extension for **Chromium-based browsers** (Chrome, Edge, Brave, Opera,
 ## Features
 
 - **Real-time Detection**: Automatically captures video and audio URLs as you browse
-- **Multiple Format Support**: Detects 25+ media formats including MP4, M3U8, MPD, WebM, MP3, and more
+- **Multiple Format Support**: Detects 35+ media formats including MP4, M3U8, MPD, WebM, MP3, and more
 - **Clean Interface**: Simple popup with organized list of detected links
 - **One-Click Copy**: Copy any link to clipboard with a single click
 - **Tab Management**: Links are organized per tab with automatic cleanup
@@ -20,8 +20,9 @@ A browser extension for **Chromium-based browsers** (Chrome, Edge, Brave, Opera,
 The extension detects the following media formats:
 
 **Video Formats:**
-- MP4, WebM, AVI, MOV, MKV, FLV, 3GP
-- M4V, OGV, ASF, DIVX, MPG, MPEG, WMV
+- MP4, WebM, AVI, MOV, MKV, FLV, 3GP, 3G2
+- M4V, M4S, OGV, ASF, DIVX, MPG, MPEG, WMV
+- F4V, M2TS, MTS, VID, GIF
 
 **Audio Formats:**
 - MP3, AAC, FLAC, WAV, OGG, OPUS
