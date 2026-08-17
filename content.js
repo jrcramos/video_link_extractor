@@ -16,12 +16,44 @@
     }
   }
 
-  // Deep scan function that traverses normal DOM and open Shadow Roots
+  // Send found links to background worker
+  function reportNewLinks(links) {
+    if (!links || links.length === 0) return;
+    const toSend = [];
+    links.forEach(l => {
+      const resolved = resolveUrl(l);
+      if (resolved && !detectedUrls.has(resolved)) {
+        detectedUrls.add(resolved);
+        toSend.push(resolved);
+      }
+    });
+
+    if (toSend.length > 0) {
+      try {
+        chrome.runtime.sendMessage({
+          action: 'addLinksFromContent',
+          links: toSend
+        });
+      } catch (e) {
+        // Extension context might be invalidated if updated
+      }
+    }
+  }
+
+  // 1. Listen for sniffed media from inject.js (JSON API responses / fetch / XHR / MSE blobs)
+  window.addEventListener('message', (event) => {
+    if (event.source !== window) return;
+    if (event.data && event.data.type === '__VLE_SNIFFED_MEDIA__' && Array.isArray(event.data.links)) {
+      reportNewLinks(event.data.links);
+    }
+  });
+
+  // 2. Deep scan function that traverses normal DOM and open Shadow Roots
   function scanRoot(root) {
     if (!root) return;
     const newLinks = [];
 
-    // 1. Check all <video> and <audio> elements
+    // Check all <video> and <audio> elements
     const mediaElements = root.querySelectorAll ? root.querySelectorAll('video, audio') : [];
     mediaElements.forEach((el) => {
       const src = resolveUrl(el.src) || resolveUrl(el.currentSrc);
@@ -41,7 +73,7 @@
       });
     });
 
-    // 2. Check standalone <source> tags
+    // Check standalone <source> tags
     const standaloneSources = root.querySelectorAll ? root.querySelectorAll('source[src]') : [];
     standaloneSources.forEach((s) => {
       const src = resolveUrl(s.src) || resolveUrl(s.getAttribute('src'));
@@ -51,19 +83,12 @@
       }
     });
 
-    // 3. Send newly found media links to background worker
+    // Send newly found media links
     if (newLinks.length > 0) {
-      try {
-        chrome.runtime.sendMessage({
-          action: 'addLinksFromContent',
-          links: newLinks
-        });
-      } catch (e) {
-        // Extension context might be invalidated if updated
-      }
+      reportNewLinks(newLinks);
     }
 
-    // 4. Recursively scan open Shadow Roots for modern Web Components
+    // Recursively scan open Shadow Roots for modern Web Components
     const allElements = root.querySelectorAll ? root.querySelectorAll('*') : [];
     allElements.forEach((el) => {
       if (el.shadowRoot) {

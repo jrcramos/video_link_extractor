@@ -2,10 +2,13 @@
 const videoLinks = new Map();
 const tabPageUrls = new Map();
 
-// STRATEGY 1: CLEAN REGEX FILTER (excludes chunk fragments like .ts, .m4s)
+// STRATEGY 1: CLEAN REGEX FILTER (standard extensions)
 const videoRegex = /\.(m3u8|mpd|m3u|mp4|webm|mkv|mov|avi|flv|m4v|ogv|wmv|3gp|f4v|mp3|aac|flac|wav|ogg|opus|m4a)(\?|#|$)/i;
 
-// STRATEGY 2: CONTENT-TYPE CHECK
+// STRATEGY 2: QUERY STRING & SIGNATURE DETECTION (e.g. YouTube, Cloudflare, query-only CDNs)
+const videoQueryRegex = /(\?|&)(mime=video%2F|mime=video\/|mime=audio%2F|mime=audio\/|format=m3u8|format=mpd|type=m3u8|type=mpd|ext=mp4)|\/videoplayback\?/i;
+
+// STRATEGY 3: CONTENT-TYPE CHECK
 const isVideoHeader = (headers) => {
   if (!headers) return false;
   
@@ -13,7 +16,7 @@ const isVideoHeader = (headers) => {
     if (header.name.toLowerCase() === 'content-type') {
       const type = header.value.toLowerCase();
       
-      // Exclude raw transport stream chunks
+      // Exclude raw transport stream chunks from flooding
       if (type.includes('video/mp2t') || type.includes('video/iso.segment')) {
         return false;
       }
@@ -85,12 +88,14 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   }
 });
 
-// LISTENER 1: Catch URLs by Extension & Manifest format
+// LISTENER 1: Catch URLs by Extension, Manifest format, or Query Signatures
 chrome.webRequest.onBeforeSendHeaders.addListener(
   (details) => {
-    if (details.tabId >= 0 && details.url && details.url.match(videoRegex)) {
-      const referer = getRefererFromDetails(details);
-      addLinkToTab(details.tabId, details.url, referer);
+    if (details.tabId >= 0 && details.url) {
+      if (details.url.match(videoRegex) || details.url.match(videoQueryRegex)) {
+        const referer = getRefererFromDetails(details);
+        addLinkToTab(details.tabId, details.url, referer);
+      }
     }
   },
   { urls: ["<all_urls>"] },
@@ -167,7 +172,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     }
     sendResponse({ success: true });
   }
-  // From content.js: add links
+  // From content.js: add links (DOM scanner, JSON sniffer, fetch/XHR hooks)
   else if (request.action === 'addLinksFromContent') {
     const tabId = sender.tab ? sender.tab.id : request.tabId;
     const pageUrl = sender.tab ? sender.tab.url : tabPageUrls.get(tabId) || '';

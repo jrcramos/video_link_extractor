@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Video Link Extractor Pro",
-  "version": "4.1",
-  "description": "Automatically detects and lists video/audio links with referer headers, in-popup preview, and yt-dlp commands.",
+  "version": "4.2",
+  "description": "Automatically detects video/audio streams from network requests, web pages, JSON APIs, and media sources.",
   "permissions": [
     "webRequest",
     "declarativeNetRequest",
@@ -20,9 +20,22 @@
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
+      "js": ["inject.js"],
+      "world": "MAIN",
+      "all_frames": true,
+      "run_at": "document_start"
+    },
+    {
+      "matches": ["<all_urls>"],
       "js": ["content.js"],
       "all_frames": true,
       "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["inject.js"],
+      "matches": ["<all_urls>"]
     }
   ],
   "action": {
