@@ -2,7 +2,7 @@
 
 A browser extension for **Chromium-based browsers** (Chrome, Edge, Brave, Opera, Vivaldi, etc.) that automatically detects and extracts video and audio links from network requests on any webpage. Perfect for downloading media content, analyzing streaming URLs, or archiving multimedia resources.
 
-![Extension Screenshot](screenshot-new.png)
+![Extension Screenshot](screenshot-new.png) 
 
 *Updated UI with gradient background, full link display (no truncation), and modern styling*
 
