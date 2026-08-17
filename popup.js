@@ -13,15 +13,15 @@ document.addEventListener('DOMContentLoaded', () => {
   function getMediaType(url) {
     const cleanUrl = url.split('?')[0].split('#')[0].toLowerCase();
     if (cleanUrl.endsWith('.m3u8') || cleanUrl.endsWith('.m3u')) {
-      return { label: 'HLS Stream', tagClass: 'tag-stream', isStream: true };
+      return { label: 'HLS Stream', tagClass: 'tag-stream', isStream: true, icon: '🎬' };
     }
     if (cleanUrl.endsWith('.mpd')) {
-      return { label: 'DASH Stream', tagClass: 'tag-stream', isStream: true };
+      return { label: 'DASH Stream', tagClass: 'tag-stream', isStream: true, icon: '🎬' };
     }
     if (cleanUrl.endsWith('.mp3') || cleanUrl.endsWith('.wav') || cleanUrl.endsWith('.aac') || cleanUrl.endsWith('.flac') || cleanUrl.endsWith('.ogg') || cleanUrl.endsWith('.opus') || cleanUrl.endsWith('.m4a')) {
-      return { label: 'Audio', tagClass: 'tag-audio', isAudio: true };
+      return { label: 'Audio', tagClass: 'tag-audio', isAudio: true, icon: '🎵' };
     }
-    return { label: 'Video', tagClass: 'tag-video', isVideo: true };
+    return { label: 'Video', tagClass: 'tag-video', isVideo: true, icon: '🎬' };
   }
 
   // Helper for copy button visual feedback
@@ -62,6 +62,7 @@ document.addEventListener('DOMContentLoaded', () => {
     currentLinks.forEach((item) => {
       const url = typeof item === 'string' ? item : item.url;
       const referer = (typeof item === 'object' && item.referer) ? item.referer : currentPageUrl;
+      const poster = (typeof item === 'object' && item.poster) ? item.poster : '';
       const typeInfo = getMediaType(url);
 
       const card = document.createElement('div');
@@ -70,6 +71,29 @@ document.addEventListener('DOMContentLoaded', () => {
       // Card Header / Info
       const cardTop = document.createElement('div');
       cardTop.className = 'card-top';
+
+      // Small inline thumbnail preview box (visible by default)
+      const thumbBox = document.createElement('div');
+      thumbBox.className = 'thumb-box';
+
+      if (poster) {
+        chrome.runtime.sendMessage({
+          action: 'preparePreview',
+          mediaUrl: poster,
+          refererUrl: referer
+        }, () => {
+          const img = document.createElement('img');
+          img.alt = 'Thumbnail';
+          img.src = poster;
+          img.onerror = () => {
+            img.remove();
+            thumbBox.innerHTML = `<span class="thumb-placeholder">${typeInfo.icon}</span>`;
+          };
+          thumbBox.appendChild(img);
+        });
+      } else {
+        thumbBox.innerHTML = `<span class="thumb-placeholder">${typeInfo.icon}</span>`;
+      }
 
       const cardInfo = document.createElement('div');
       cardInfo.className = 'card-info';
@@ -107,11 +131,11 @@ document.addEventListener('DOMContentLoaded', () => {
       const cardActions = document.createElement('div');
       cardActions.className = 'card-actions';
 
-      // 1. Preview Button
+      // 1. Video Preview Button
       const previewBtn = document.createElement('button');
       previewBtn.className = 'action-btn btn-preview';
-      previewBtn.innerHTML = '▶ Preview';
-      previewBtn.title = 'Test play in popup (with auto-referer bypass)';
+      previewBtn.innerHTML = '▶ Video';
+      previewBtn.title = 'Test play live stream in popup';
 
       // 2. Copy URL Button
       const copyBtn = document.createElement('button');
@@ -163,15 +187,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
       let previewBox = null;
 
-      // Preview toggle with declarativeNetRequest referer rewrite
+      // Video Preview Toggle Handler
       previewBtn.addEventListener('click', () => {
         if (previewBox) {
           previewBox.remove();
           previewBox = null;
-          previewBtn.innerHTML = '▶ Preview';
+          previewBtn.innerHTML = '▶ Video';
           previewBtn.classList.remove('active');
         } else {
-          // Prepare preview referer rule in background
           chrome.runtime.sendMessage({
             action: 'preparePreview',
             mediaUrl: url,
@@ -192,6 +215,7 @@ document.addEventListener('DOMContentLoaded', () => {
               videoEl.autoplay = true;
               videoEl.playsInline = true;
               videoEl.src = url;
+              if (poster) videoEl.poster = poster;
               previewBox.appendChild(videoEl);
 
               if (typeInfo.isStream) {
@@ -203,7 +227,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
 
             card.appendChild(previewBox);
-            previewBtn.innerHTML = '⏹ Close';
+            previewBtn.innerHTML = '⏹ Video';
             previewBtn.classList.add('active');
           });
         }
@@ -214,6 +238,7 @@ document.addEventListener('DOMContentLoaded', () => {
       cardActions.appendChild(ytdlpBtn);
       cardActions.appendChild(copyBtn);
 
+      cardTop.appendChild(thumbBox);
       cardTop.appendChild(cardInfo);
       cardTop.appendChild(cardActions);
       card.appendChild(cardTop);
@@ -237,7 +262,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
       });
 
-      // Also trigger content scan
+      // Trigger page content scan
       chrome.tabs.sendMessage(currentTabId, { action: 'forceContentScan' }, () => {
         if (!chrome.runtime.lastError) {
           chrome.runtime.sendMessage({ action: 'getLinks', tabId: currentTabId }, (res) => {

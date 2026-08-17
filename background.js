@@ -1,11 +1,11 @@
-// Map to store links: tabId -> Map of url -> { url, referer, timestamp }
+// Map to store links: tabId -> Map of url -> { url, referer, poster, timestamp }
 const videoLinks = new Map();
 const tabPageUrls = new Map();
 
 // STRATEGY 1: CLEAN REGEX FILTER (standard extensions)
 const videoRegex = /\.(m3u8|mpd|m3u|mp4|webm|mkv|mov|avi|flv|m4v|ogv|wmv|3gp|f4v|mp3|aac|flac|wav|ogg|opus|m4a)(\?|#|$)/i;
 
-// STRATEGY 2: QUERY STRING & SIGNATURE DETECTION (e.g. YouTube, Cloudflare, query-only CDNs)
+// STRATEGY 2: QUERY STRING & SIGNATURE DETECTION
 const videoQueryRegex = /(\?|&)(mime=video%2F|mime=video\/|mime=audio%2F|mime=audio\/|format=m3u8|format=mpd|type=m3u8|type=mpd|ext=mp4)|\/videoplayback\?/i;
 
 // STRATEGY 3: CONTENT-TYPE CHECK
@@ -59,7 +59,7 @@ const getRefererFromDetails = (details) => {
 };
 
 // Add detected link to storage
-const addLinkToTab = (tabId, url, referer) => {
+const addLinkToTab = (tabId, url, referer, poster) => {
   if (tabId < 0 || !url) return;
   if (url.startsWith('data:') || url.startsWith('blob:')) return;
 
@@ -70,10 +70,12 @@ const addLinkToTab = (tabId, url, referer) => {
   const tabMap = videoLinks.get(tabId);
   const existing = tabMap.get(url);
   const effectiveReferer = referer || (existing ? existing.referer : '') || tabPageUrls.get(tabId) || '';
+  const effectivePoster = poster || (existing ? existing.poster : '') || '';
 
   tabMap.set(url, {
     url: url,
     referer: effectiveReferer,
+    poster: effectivePoster,
     timestamp: Date.now()
   });
   
@@ -94,7 +96,7 @@ chrome.webRequest.onBeforeSendHeaders.addListener(
     if (details.tabId >= 0 && details.url) {
       if (details.url.match(videoRegex) || details.url.match(videoQueryRegex)) {
         const referer = getRefererFromDetails(details);
-        addLinkToTab(details.tabId, details.url, referer);
+        addLinkToTab(details.tabId, details.url, referer, '');
       }
     }
   },
@@ -107,7 +109,7 @@ chrome.webRequest.onHeadersReceived.addListener(
   (details) => {
     if (details.tabId >= 0 && details.url && isVideoHeader(details.responseHeaders)) {
       const referer = tabPageUrls.get(details.tabId) || details.initiator || '';
-      addLinkToTab(details.tabId, details.url, referer);
+      addLinkToTab(details.tabId, details.url, referer, '');
     }
   },
   { urls: ["<all_urls>"] },
@@ -120,7 +122,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   tabPageUrls.delete(tabId);
 });
 
-// Set dynamic declarativeNetRequest rule for in-popup video preview with custom referer
+// Set dynamic declarativeNetRequest rule for in-popup video/image preview with custom referer
 const setPreviewRefererRule = async (mediaUrl, refererUrl) => {
   if (!chrome.declarativeNetRequest) return;
   try {
@@ -142,7 +144,7 @@ const setPreviewRefererRule = async (mediaUrl, refererUrl) => {
       },
       condition: {
         urlFilter: `||${parsedMedia.hostname}*`,
-        resourceTypes: ['media', 'xmlhttprequest', 'other']
+        resourceTypes: ['media', 'image', 'xmlhttprequest', 'other']
       }
     };
 
@@ -157,7 +159,7 @@ const setPreviewRefererRule = async (mediaUrl, refererUrl) => {
 
 // MESSAGE HANDLING
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  // From popup: get links + referers
+  // From popup: get links + referers + posters
   if (request.action === 'getLinks') {
     const linksMap = videoLinks.get(request.tabId);
     const pageUrl = tabPageUrls.get(request.tabId) || '';
@@ -172,12 +174,18 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     }
     sendResponse({ success: true });
   }
-  // From content.js: add links (DOM scanner, JSON sniffer, fetch/XHR hooks)
+  // From content.js: add links (with optional poster)
   else if (request.action === 'addLinksFromContent') {
     const tabId = sender.tab ? sender.tab.id : request.tabId;
     const pageUrl = sender.tab ? sender.tab.url : tabPageUrls.get(tabId) || '';
     if (tabId && Array.isArray(request.links)) {
-      request.links.forEach((link) => addLinkToTab(tabId, link, pageUrl));
+      request.links.forEach((item) => {
+        if (typeof item === 'string') {
+          addLinkToTab(tabId, item, pageUrl, '');
+        } else if (item && item.url) {
+          addLinkToTab(tabId, item.url, pageUrl, item.poster || '');
+        }
+      });
     }
     sendResponse({ success: true });
   }

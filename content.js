@@ -1,4 +1,4 @@
-// content.js - Injected into pages & all frames to detect embedded media elements
+// content.js - Injected into pages & all frames to detect embedded media elements & poster thumbnails
 (function() {
   const detectedUrls = new Set();
 
@@ -16,15 +16,32 @@
     }
   }
 
+  // Helper to find page poster/thumbnail fallback
+  function getPageThumbnail() {
+    const metaPoster = document.querySelector('meta[property="og:image"], meta[name="twitter:image"], link[rel="image_src"]');
+    if (metaPoster) {
+      return resolveUrl(metaPoster.getAttribute('content') || metaPoster.getAttribute('href'));
+    }
+    return '';
+  }
+
   // Send found links to background worker
-  function reportNewLinks(links) {
-    if (!links || links.length === 0) return;
+  function reportNewLinks(items) {
+    if (!items || items.length === 0) return;
     const toSend = [];
-    links.forEach(l => {
-      const resolved = resolveUrl(l);
+    const pagePoster = getPageThumbnail();
+
+    items.forEach(item => {
+      const url = typeof item === 'string' ? item : item.url;
+      const poster = (typeof item === 'object' && item.poster) ? resolveUrl(item.poster) : pagePoster;
+      const resolved = resolveUrl(url);
+
       if (resolved && !detectedUrls.has(resolved)) {
         detectedUrls.add(resolved);
-        toSend.push(resolved);
+        toSend.push({
+          url: resolved,
+          poster: poster || ''
+        });
       }
     });
 
@@ -40,7 +57,7 @@
     }
   }
 
-  // 1. Listen for sniffed media from inject.js (JSON API responses / fetch / XHR / MSE blobs)
+  // 1. Listen for sniffed media from inject.js
   window.addEventListener('message', (event) => {
     if (event.source !== window) return;
     if (event.data && event.data.type === '__VLE_SNIFFED_MEDIA__' && Array.isArray(event.data.links)) {
@@ -51,15 +68,17 @@
   // 2. Deep scan function that traverses normal DOM and open Shadow Roots
   function scanRoot(root) {
     if (!root) return;
-    const newLinks = [];
+    const newItems = [];
+    const defaultPoster = getPageThumbnail();
 
     // Check all <video> and <audio> elements
     const mediaElements = root.querySelectorAll ? root.querySelectorAll('video, audio') : [];
     mediaElements.forEach((el) => {
       const src = resolveUrl(el.src) || resolveUrl(el.currentSrc);
+      const poster = resolveUrl(el.poster) || resolveUrl(el.getAttribute('poster')) || defaultPoster;
+
       if (src && !detectedUrls.has(src)) {
-        detectedUrls.add(src);
-        newLinks.push(src);
+        newItems.push({ url: src, poster: poster || '' });
       }
 
       // Check child <source> tags
@@ -67,8 +86,7 @@
       sources.forEach((s) => {
         const sourceSrc = resolveUrl(s.src) || resolveUrl(s.getAttribute('src'));
         if (sourceSrc && !detectedUrls.has(sourceSrc)) {
-          detectedUrls.add(sourceSrc);
-          newLinks.push(sourceSrc);
+          newItems.push({ url: sourceSrc, poster: poster || '' });
         }
       });
     });
@@ -78,14 +96,13 @@
     standaloneSources.forEach((s) => {
       const src = resolveUrl(s.src) || resolveUrl(s.getAttribute('src'));
       if (src && !detectedUrls.has(src)) {
-        detectedUrls.add(src);
-        newLinks.push(src);
+        newItems.push({ url: src, poster: defaultPoster || '' });
       }
     });
 
     // Send newly found media links
-    if (newLinks.length > 0) {
-      reportNewLinks(newLinks);
+    if (newItems.length > 0) {
+      reportNewLinks(newItems);
     }
 
     // Recursively scan open Shadow Roots for modern Web Components
@@ -118,7 +135,7 @@
       childList: true,
       subtree: true,
       attributes: true,
-      attributeFilter: ['src']
+      attributeFilter: ['src', 'poster']
     });
   } catch (e) {}
 
