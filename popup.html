@@ -1,79 +1,126 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-  <title>Video Link Extractor</title>
+  <meta charset="UTF-8">
+  <title>Video Link Extractor Pro</title>
   <style>
+    :root {
+      --primary: #6366f1;
+      --primary-hover: #4f46e5;
+      --bg-gradient: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%);
+      --card-bg: #ffffff;
+      --text-main: #1f2937;
+      --text-muted: #6b7280;
+      --border-color: #e5e7eb;
+      --badge-stream: #8b5cf6;
+      --badge-video: #3b82f6;
+      --badge-audio: #10b981;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
     body {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      width: 600px;
-      min-height: 300px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+      width: 660px;
+      min-height: 320px;
+      max-height: 600px;
       margin: 0;
       padding: 0;
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      background: var(--bg-gradient);
       color: #fff;
+      display: flex;
+      flex-direction: column;
     }
     
     .container {
       padding: 16px;
+      display: flex;
+      flex-direction: column;
+      height: 100%;
     }
     
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 12px;
+      padding-bottom: 10px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+    }
+
+    .title-group {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
     h1 {
-      font-size: 20px;
-      font-weight: 600;
-      margin: 0 0 16px 0;
-      padding-bottom: 12px;
-      border-bottom: 2px solid rgba(255, 255, 255, 0.3);
+      font-size: 18px;
+      font-weight: 700;
+      margin: 0;
       color: #fff;
       display: flex;
       align-items: center;
-      gap: 10px;
+      gap: 6px;
+    }
+
+    .count-badge {
+      background: rgba(255, 255, 255, 0.25);
+      color: #fff;
+      font-size: 12px;
+      font-weight: 700;
+      padding: 2px 8px;
+      border-radius: 12px;
+      backdrop-filter: blur(4px);
     }
     
-    h1::before {
-      content: "";
-      font-size: 24px;
-    }
-    
-    #controls {
+    .controls {
       display: flex;
-      justify-content: flex-end;
-      margin-bottom: 12px;
+      gap: 8px;
     }
     
-    #clearButton {
-      padding: 8px 16px;
+    .btn {
+      padding: 6px 12px;
       cursor: pointer;
       border: none;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 600;
+      transition: all 0.2s ease;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      user-select: none;
+    }
+
+    .btn-secondary {
       background-color: rgba(255, 255, 255, 0.2);
       color: #fff;
-      border-radius: 6px;
-      font-size: 13px;
-      font-weight: 500;
-      transition: all 0.2s ease;
-      backdrop-filter: blur(10px);
+      backdrop-filter: blur(8px);
     }
-    
-    #clearButton:hover {
-      background-color: rgba(255, 255, 255, 0.3);
+
+    .btn-secondary:hover {
+      background-color: rgba(255, 255, 255, 0.35);
       transform: translateY(-1px);
-      box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
-    }
-    
-    #clearButton:active {
-      transform: translateY(0);
     }
     
     #links-container {
-      max-height: 450px;
+      flex: 1;
+      max-height: 470px;
       overflow-y: auto;
-      background-color: rgba(255, 255, 255, 0.95);
+      background-color: rgba(249, 250, 251, 0.96);
       border-radius: 8px;
-      padding: 8px;
-      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+      padding: 10px;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
     }
     
     #links-container::-webkit-scrollbar {
-      width: 8px;
+      width: 6px;
     }
     
     #links-container::-webkit-scrollbar-track {
@@ -82,110 +129,227 @@
     }
     
     #links-container::-webkit-scrollbar-thumb {
-      background: rgba(102, 126, 234, 0.5);
+      background: rgba(99, 102, 241, 0.4);
       border-radius: 4px;
     }
     
     #links-container::-webkit-scrollbar-thumb:hover {
-      background: rgba(102, 126, 234, 0.7);
+      background: rgba(99, 102, 241, 0.7);
     }
     
-    .link-item {
+    .link-card {
+      background-color: var(--card-bg);
+      border-radius: 8px;
+      border: 1px solid var(--border-color);
+      padding: 10px;
+      transition: all 0.2s ease;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+    }
+    
+    .link-card:hover {
+      border-color: var(--primary);
+      box-shadow: 0 3px 8px rgba(99, 102, 241, 0.15);
+    }
+
+    .card-top {
       display: flex;
       align-items: flex-start;
       gap: 10px;
-      padding: 10px;
-      margin-bottom: 6px;
-      background-color: #fff;
-      border-radius: 6px;
-      border: 1px solid #e0e0e0;
-      transition: all 0.2s ease;
+      justify-content: space-between;
     }
-    
-    .link-item:hover {
-      border-color: #667eea;
-      box-shadow: 0 2px 8px rgba(102, 126, 234, 0.2);
-      transform: translateX(2px);
-    }
-    
-    .link-item:last-child {
-      margin-bottom: 0;
-    }
-    
-    .link-item a {
-      color: #667eea;
-      text-decoration: none;
-      flex-grow: 1;
-      word-break: break-all;
-      font-size: 13px;
-      line-height: 1.5;
+
+    .card-info {
+      flex: 1;
       min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .tag-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .type-tag {
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      padding: 2px 6px;
+      border-radius: 4px;
+      color: #fff;
+    }
+
+    .tag-stream { background-color: var(--badge-stream); }
+    .tag-video { background-color: var(--badge-video); }
+    .tag-audio { background-color: var(--badge-audio); }
+
+    .referer-info {
+      font-size: 11px;
+      color: var(--text-muted);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      max-width: 320px;
     }
     
-    .link-item a:hover {
-      color: #764ba2;
+    .link-url {
+      color: #374151;
+      text-decoration: none;
+      font-size: 12px;
+      line-height: 1.4;
+      word-break: break-all;
+      font-family: monospace;
+      max-height: 38px;
+      overflow: hidden;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+    }
+    
+    .link-url:hover {
+      color: var(--primary);
       text-decoration: underline;
     }
+
+    .card-actions {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      flex-shrink: 0;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
     
-    .copy-btn {
-      padding: 6px 12px;
+    .action-btn {
+      padding: 5px 8px;
       cursor: pointer;
       border: none;
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-      color: #fff;
       border-radius: 5px;
-      font-size: 12px;
-      font-weight: 500;
-      flex-shrink: 0;
+      font-size: 11px;
+      font-weight: 600;
       transition: all 0.2s ease;
-      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-      align-self: flex-start;
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      user-select: none;
     }
     
-    .copy-btn:hover {
+    .btn-copy {
+      background: var(--bg-gradient);
+      color: #fff;
+    }
+    
+    .btn-copy:hover {
       transform: translateY(-1px);
-      box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+      box-shadow: 0 2px 6px rgba(99, 102, 241, 0.3);
+    }
+
+    .btn-ytdlp {
+      background-color: #ef4444;
+      color: #fff;
+    }
+
+    .btn-ytdlp:hover {
+      background-color: #dc2626;
+      transform: translateY(-1px);
+      box-shadow: 0 2px 6px rgba(239, 68, 68, 0.3);
+    }
+
+    .btn-piped {
+      background-color: #0284c7;
+      color: #fff;
+    }
+
+    .btn-piped:hover {
+      background-color: #0369a1;
+      transform: translateY(-1px);
+      box-shadow: 0 2px 6px rgba(2, 132, 199, 0.3);
     }
     
-    .copy-btn:active {
-      transform: translateY(0);
-      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+    .btn-copy.copied, .btn-ytdlp.copied, .btn-piped.copied {
+      background: #10b981 !important;
+      color: #fff !important;
     }
-    
-    .copy-btn.copied {
-      background: linear-gradient(135deg, #4caf50 0%, #45a049 100%);
+
+    .btn-preview {
+      background-color: #f3f4f6;
+      color: #4b5563;
+      border: 1px solid #d1d5db;
     }
-    
-    #status {
-      color: rgba(255, 255, 255, 0.9);
+
+    .btn-preview:hover {
+      background-color: #e5e7eb;
+      color: #1f2937;
+    }
+
+    .btn-preview.active {
+      background-color: #fee2e2;
+      color: #dc2626;
+      border-color: #fca5a5;
+    }
+
+    .preview-player-box {
+      margin-top: 6px;
+      padding: 8px;
+      border-top: 1px dashed var(--border-color);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      background: #111827;
+      border-radius: 6px;
+      overflow: hidden;
+      width: 100%;
+    }
+
+    .preview-player-box video, .preview-player-box audio {
+      width: 100%;
+      max-height: 220px;
+      outline: none;
+      border-radius: 4px;
+    }
+
+    .preview-note {
+      font-size: 11px;
+      color: #9ca3af;
+      padding: 6px 8px 2px 8px;
       text-align: center;
-      padding: 32px 20px;
-      font-size: 14px;
-      line-height: 1.6;
     }
     
     .empty-state {
       text-align: center;
-      padding: 40px 20px;
-      color: rgba(255, 255, 255, 0.8);
+      padding: 48px 20px;
+      color: rgba(255, 255, 255, 0.85);
+      font-size: 14px;
+      line-height: 1.6;
     }
     
-    .empty-state::before {
-      content: "";
-      font-size: 48px;
-      display: block;
-      margin-bottom: 16px;
+    .empty-icon {
+      font-size: 40px;
+      margin-bottom: 12px;
     }
   </style>
 </head>
 <body>
   <div class="container">
-    <h1>Video & Audio Links</h1>
-    <div id="controls">
-      <button id="clearButton" title="Clear links for this tab">Clear All</button>
+    <div class="header">
+      <div class="title-group">
+        <h1>Video & Audio Streams</h1>
+        <span id="countBadge" class="count-badge">0</span>
+      </div>
+      <div class="controls">
+        <button id="copyAllButton" class="btn btn-secondary" title="Copy all raw URLs">Copy All</button>
+        <button id="clearButton" class="btn btn-secondary" title="Clear detected links for this tab">Clear</button>
+      </div>
     </div>
+    
     <div id="links-container"></div>
-    <p id="status"></p>
+    <div id="status"></div>
   </div>
 
   <script src="popup.js"></script>

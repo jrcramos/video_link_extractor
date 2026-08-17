@@ -1,15 +1,11 @@
-// Use a Map to store links, with tabId as the key and a Set of URLs as the value.
-// A Map is better for arbitrary keys like tab IDs.
-// A Set automatically handles uniqueness, preventing duplicate links.
+// Map to store links: tabId -> Map of url -> { url, referer, timestamp }
 const videoLinks = new Map();
+const tabPageUrls = new Map();
 
-// STRATEGY 1: REGEX
-// I removed audio formats (mp3, wav, etc) to prevent false positives.
-// Added 'i' flag for case-insensitive matching (captures .MP4).
-const videoRegex = /\.(m3u8|mpd|m3u|webm|gif|mov|avi|m4v|ogv|asf|opus|ts|divx|mpg|rm|mp3|aac|flac|wav|ogg|wmv|m4s|m2ts|mts|f4v|3g2|mpeg|mkv|3gp|vid|flv|mp4)(\?|$)/i;
+// STRATEGY 1: CLEAN REGEX FILTER (excludes chunk fragments like .ts, .m4s)
+const videoRegex = /\.(m3u8|mpd|m3u|mp4|webm|mkv|mov|avi|flv|m4v|ogv|wmv|3gp|f4v|mp3|aac|flac|wav|ogg|opus|m4a)(\?|#|$)/i;
 
 // STRATEGY 2: CONTENT-TYPE CHECK
-// We will verify if the server says "This is a video" in the headers.
 const isVideoHeader = (headers) => {
   if (!headers) return false;
   
@@ -17,12 +13,17 @@ const isVideoHeader = (headers) => {
     if (header.name.toLowerCase() === 'content-type') {
       const type = header.value.toLowerCase();
       
-      // Check for standard video types or specific streaming manifests
+      // Exclude raw transport stream chunks
+      if (type.includes('video/mp2t') || type.includes('video/iso.segment')) {
+        return false;
+      }
+      
       if (
-        type.startsWith('video/') || 
-        type.includes('application/x-mpegurl') || // HLS (m3u8)
-        type.includes('application/vnd.apple.mpegurl') || // HLS alt
-        type.includes('application/dash+xml') // DASH (mpd)
+        type.startsWith('video/') ||
+        type.startsWith('audio/') ||
+        type.includes('application/x-mpegurl') ||
+        type.includes('application/vnd.apple.mpegurl') ||
+        type.includes('application/dash+xml')
       ) {
         return true;
       }
@@ -31,57 +32,156 @@ const isVideoHeader = (headers) => {
   return false;
 };
 
-// Helper function to add URL to the Map
-const addLinkToTab = (tabId, url) => {
-  if (tabId < 0 || !url) return;
+// Update badge count on toolbar icon
+const updateBadge = (tabId) => {
+  if (tabId < 0) return;
+  const count = videoLinks.has(tabId) ? videoLinks.get(tabId).size : 0;
+  const badgeText = count > 0 ? (count > 99 ? '99+' : `${count}`) : '';
   
-  if (!videoLinks.has(tabId)) {
-    videoLinks.set(tabId, new Set());
-  }
-  videoLinks.get(tabId).add(url);
+  chrome.action.setBadgeText({ text: badgeText, tabId: tabId }).catch(() => {});
+  chrome.action.setBadgeBackgroundColor({ color: '#667eea', tabId: tabId }).catch(() => {});
 };
 
-// LISTENER 1: Catch URLs by Extension (Fastest)
-chrome.webRequest.onBeforeRequest.addListener(
-  (details) => {
-    if (details.url.match(videoRegex)) {
-      addLinkToTab(details.tabId, details.url);
+// Helper function to extract referer header from request details
+const getRefererFromDetails = (details) => {
+  if (details.requestHeaders) {
+    for (const h of details.requestHeaders) {
+      if (h.name.toLowerCase() === 'referer') return h.value;
     }
-  },
-  { urls: ["<all_urls>"] }
-);
+  }
+  if (details.initiator && details.initiator !== 'null' && !details.initiator.startsWith('chrome-extension')) {
+    return details.initiator;
+  }
+  return tabPageUrls.get(details.tabId) || '';
+};
 
-// LISTENER 2: Catch URLs by Header (Fallback/More Robust)
-chrome.webRequest.onHeadersReceived.addListener(
-  (details) => {
-    // Only check if we haven't already captured this URL (optimization)
-    // Or just let the Set handle the deduplication.
-    if (isVideoHeader(details.responseHeaders)) {
-      addLinkToTab(details.tabId, details.url);
-    }
-  },
-  { urls: ["<all_urls>"] },
-  ["responseHeaders"] // IMPORTANT: This permission allows us to inspect headers
-);
+// Add detected link to storage
+const addLinkToTab = (tabId, url, referer) => {
+  if (tabId < 0 || !url) return;
+  if (url.startsWith('data:') || url.startsWith('blob:')) return;
 
-// MEMORY CLEANUP
-chrome.tabs.onRemoved.addListener((tabId) => {
-  if (videoLinks.has(tabId)) {
-    videoLinks.delete(tabId);
-    console.log(`Cleaned up data for closed tab: ${tabId}`);
+  if (!videoLinks.has(tabId)) {
+    videoLinks.set(tabId, new Map());
+  }
+  
+  const tabMap = videoLinks.get(tabId);
+  const existing = tabMap.get(url);
+  const effectiveReferer = referer || (existing ? existing.referer : '') || tabPageUrls.get(tabId) || '';
+
+  tabMap.set(url, {
+    url: url,
+    referer: effectiveReferer,
+    timestamp: Date.now()
+  });
+  
+  updateBadge(tabId);
+};
+
+// Track main frame page URLs for referer fallback
+chrome.webNavigation = chrome.webNavigation || {};
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (tab && tab.url && !tab.url.startsWith('chrome://')) {
+    tabPageUrls.set(tabId, tab.url);
   }
 });
 
+// LISTENER 1: Catch URLs by Extension & Manifest format
+chrome.webRequest.onBeforeSendHeaders.addListener(
+  (details) => {
+    if (details.tabId >= 0 && details.url && details.url.match(videoRegex)) {
+      const referer = getRefererFromDetails(details);
+      addLinkToTab(details.tabId, details.url, referer);
+    }
+  },
+  { urls: ["<all_urls>"] },
+  ["requestHeaders", "extraHeaders"]
+);
+
+// LISTENER 2: Catch URLs by Response Content-Type Header
+chrome.webRequest.onHeadersReceived.addListener(
+  (details) => {
+    if (details.tabId >= 0 && details.url && isVideoHeader(details.responseHeaders)) {
+      const referer = tabPageUrls.get(details.tabId) || details.initiator || '';
+      addLinkToTab(details.tabId, details.url, referer);
+    }
+  },
+  { urls: ["<all_urls>"] },
+  ["responseHeaders"]
+);
+
+// Clean up memory on tab close
+chrome.tabs.onRemoved.addListener((tabId) => {
+  videoLinks.delete(tabId);
+  tabPageUrls.delete(tabId);
+});
+
+// Set dynamic declarativeNetRequest rule for in-popup video preview with custom referer
+const setPreviewRefererRule = async (mediaUrl, refererUrl) => {
+  if (!chrome.declarativeNetRequest) return;
+  try {
+    const parsedMedia = new URL(mediaUrl);
+    const parsedRef = refererUrl ? new URL(refererUrl) : null;
+    const origin = parsedRef ? parsedRef.origin : '';
+
+    const requestHeaders = [
+      { header: 'Referer', operation: 'set', value: refererUrl || origin || 'https://' + parsedMedia.hostname },
+      { header: 'Origin', operation: 'set', value: origin || 'https://' + parsedMedia.hostname }
+    ];
+
+    const rule = {
+      id: 1001,
+      priority: 1,
+      action: {
+        type: 'modifyHeaders',
+        requestHeaders: requestHeaders
+      },
+      condition: {
+        urlFilter: `||${parsedMedia.hostname}*`,
+        resourceTypes: ['media', 'xmlhttprequest', 'other']
+      }
+    };
+
+    await chrome.declarativeNetRequest.updateDynamicRules({
+      removeRuleIds: [1001],
+      addRules: [rule]
+    });
+  } catch (err) {
+    console.error('Failed to update preview referer rule:', err);
+  }
+};
+
 // MESSAGE HANDLING
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  // From popup: get links + referers
   if (request.action === 'getLinks') {
-    const links = videoLinks.get(request.tabId);
-    sendResponse({ links: links ? Array.from(links) : [] });
-  } else if (request.action === 'clearLinks') {
+    const linksMap = videoLinks.get(request.tabId);
+    const pageUrl = tabPageUrls.get(request.tabId) || '';
+    const linksArray = linksMap ? Array.from(linksMap.values()) : [];
+    sendResponse({ links: linksArray, pageUrl: pageUrl });
+  } 
+  // From popup: clear links
+  else if (request.action === 'clearLinks') {
     if (videoLinks.has(request.tabId)) {
       videoLinks.delete(request.tabId);
-      sendResponse({ success: true });
+      updateBadge(request.tabId);
     }
+    sendResponse({ success: true });
+  }
+  // From content.js: add links
+  else if (request.action === 'addLinksFromContent') {
+    const tabId = sender.tab ? sender.tab.id : request.tabId;
+    const pageUrl = sender.tab ? sender.tab.url : tabPageUrls.get(tabId) || '';
+    if (tabId && Array.isArray(request.links)) {
+      request.links.forEach((link) => addLinkToTab(tabId, link, pageUrl));
+    }
+    sendResponse({ success: true });
+  }
+  // From popup: enable preview referer rule
+  else if (request.action === 'preparePreview') {
+    setPreviewRefererRule(request.mediaUrl, request.refererUrl).then(() => {
+      sendResponse({ success: true });
+    });
+    return true;
   }
   return true; 
 });
