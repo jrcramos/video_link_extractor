@@ -1,219 +1,101 @@
 # Video Link Extractor Pro
 
-A browser extension for **Chromium-based browsers** (Chrome, Edge, Brave, Opera, Vivaldi, etc.) that automatically detects and extracts video and audio links from network requests on any webpage. Perfect for downloading media content, analyzing streaming URLs, or archiving multimedia resources.
+A Chromium extension that detects video/audio URLs from network traffic, page media elements, and API responses, then gives you quick actions to preview or copy them.
 
-![Extension Screenshot](screenshot-new.png)
+![Extension Screenshot](screenshot-preview-v4.2.png)
 
-*Updated UI with gradient background, full link display (no truncation), and modern styling*
+*Current popup UI (v4.2) with thumbnails, preview, and copy helpers.*
 
 ## Features
 
-- **Real-time Detection**: Automatically captures video and audio URLs as you browse
-- **Multiple Format Support**: Detects 35+ media formats including MP4, M3U8, MPD, WebM, MP3, and more
-- **Clean Interface**: Simple popup with organized list of detected links
-- **One-Click Copy**: Copy any link to clipboard with a single click
-- **Tab Management**: Links are organized per tab with automatic cleanup
-- **Memory Efficient**: Automatically cleans up data when tabs are closed
-
-## Supported Formats
-
-The extension detects the following media formats:
-
-**Video Formats:**
-- MP4, WebM, AVI, MOV, MKV, FLV, 3GP, 3G2
-- M4V, M4S, OGV, ASF, DIVX, MPG, MPEG, WMV
-- F4V, M2TS, MTS, VID, GIF
-
-**Audio Formats:**
-- MP3, AAC, FLAC, WAV, OGG, OPUS
-
-**Streaming Formats:**
-- M3U8 (HLS), MPD (DASH), M3U
-- TS (Transport Stream), RM (RealMedia)
+- **Multi-source detection**: Captures media links from:
+  - network requests (`webRequest`)
+  - response `Content-Type` headers
+  - page `<video>`, `<audio>`, and `<source>` tags
+  - JSON/XHR/fetch payloads containing media URLs
+- **Broad format support**: Detects common streaming/video/audio links like M3U8, MPD, MP4, WebM, MP3, AAC, FLAC, WAV, OGG, OPUS, and more.
+- **Per-link actions**:
+  - **Video**: try in-popup playback
+  - **Copy**: copy raw URL
+  - **yt-dlp**: copy command with referer/origin headers
+  - **+ Ref**: copy `URL|Referer` payload
+- **Thumbnails & referer context**: Shows poster/thumbnail and source host when available.
+- **Per-tab isolation + cleanup**: Keeps links per tab and clears closed tabs automatically.
+- **Toolbar badge count**: Displays detected media count directly on the extension icon.
 
 ## Installation
 
-> **Compatible with:** Chrome, Edge, Brave, Opera, Vivaldi, and other Chromium-based browsers
-
-### From Chrome or Edge Web Store (Recommended)
-*Note: This extension may not be published on Chrome Web Store yet*
-
-### Manual Installation (Developer Mode)
-
-1. **Download the Extension**
-   - Clone this repository: `git clone https://github.com/jrcramos/video_link_extractor.git`
-   - Or download as ZIP and extract
-
-2. **Enable Developer Mode**
-   - Open your Chromium browser and navigate to:
-     - Chrome: `chrome://extensions/`
-     - Edge: `edge://extensions/`
-     - Brave: `brave://extensions/`
-     - Opera: `opera://extensions/`
-   - Toggle "Developer mode" in the top right corner
-
-3. **Load the Extension**
-   - Click "Load unpacked" button
-   - Select the extension folder containing `manifest.json`
-   - The extension icon should appear in your browser toolbar
+1. Clone this repository.
+2. Open your Chromium browser extensions page:
+   - Chrome: `chrome://extensions/`
+   - Edge: `edge://extensions/`
+   - Brave: `brave://extensions/`
+   - Opera: `opera://extensions/`
+3. Enable **Developer mode**.
+4. Click **Load unpacked** and select this project folder.
 
 ## Usage
 
-### Basic Usage
+1. Open a page with media content.
+2. Play or interact with the media if needed.
+3. Open the extension popup.
+4. Use **Copy All**, per-link actions, or **Clear** for the active tab.
 
-1. **Browse Websites**: Navigate to any webpage with video or audio content
-2. **Open Extension**: Click the Video Link Extractor icon in your toolbar
-3. **View Links**: All detected media links will be displayed in the popup
-4. **Copy Links**: Click the "Copy" button next to any link to copy it to clipboard
-5. **Clear Links**: Use the "Clear" button to remove all links for the current tab
+## How It Works
 
-### Tips for Better Results
+### Core Files
 
-- **Refresh Pages**: Some sites load media dynamically - try refreshing if no links appear
-- **Interact with Content**: Play videos or audio to trigger network requests
-- **Check Multiple Tabs**: Links are tracked separately for each browser tab
-- **Streaming Sites**: Works great with streaming platforms, news sites, and social media
-
-## Technical Details
-
-### Architecture
-
-- **Background Script** (`background.js`): Monitors network requests using Chromium's webRequest API
-- **Popup Interface** (`popup.html`, `popup.js`): User interface for displaying and managing links
-- **Content Script** (`content.js`): Handles additional page-specific functionality
-- **Manifest V3**: Uses the latest Chromium extension architecture for security and performance
+- `background.js`: central detection logic, tab-scoped storage, badge updates, and preview header rules.
+- `inject.js`: hooks fetch/XHR in page context to sniff media URLs in payloads.
+- `content.js`: scans DOM/shadow DOM media elements and reports discovered links.
+- `popup.html` + `popup.js`: UI rendering, preview playback, and copy actions.
 
 ### Permissions
 
-The extension requires these permissions:
-- `webRequest`: To monitor network requests for media files
-- `activeTab`: To identify the current tab
-- `scripting`: For content script injection
-- `clipboardWrite`: To copy links to clipboard
-- `<all_urls>`: To detect media on any website
+- `webRequest`: inspect outgoing requests/responses for media signals.
+- `declarativeNetRequest`, `declarativeNetRequestWithHostAccess`: set temporary preview headers (referer/origin).
+- `activeTab`, `scripting`: interact with the current tab and trigger content scans.
+- `clipboardWrite`: copy URLs/commands from the popup.
+- `host_permissions: <all_urls>`: detect media across sites.
 
-### Data Storage
+## Project Structure
 
-- Links are stored temporarily in memory (RAM) only
-- Data is automatically cleared when tabs are closed
-- No persistent storage or data collection
-- Privacy-focused design
-
-## Development
-
-### Project Structure
-
-```
+```text
 video_link_extractor/
-├── manifest.json          # Extension configuration
-├── background.js          # Service worker for request monitoring
-├── popup.html            # Extension popup UI
-├── popup.js              # Popup functionality
-├── content.js            # Content script (if needed)
-├── icons/                # Extension icons
-│   ├── icon16.png
-│   └── icon16.jpg
-└── README.md             # This file
+├── manifest.json
+├── background.js
+├── inject.js
+├── content.js
+├── popup.html
+├── popup.js
+├── icons/
+└── README.md
 ```
 
-### Building from Source
+## Testing
 
-1. **Clone Repository**
-   ```bash
-   git clone https://github.com/jrcramos/video_link_extractor.git
-   cd video_link_extractor
-   ```
+Manual validation flow:
+- Load extension in Developer mode
+- Visit media-heavy pages
+- Confirm links appear in popup
+- Confirm Copy / yt-dlp / + Ref actions
+- Confirm preview toggle works when source allows playback
+- Confirm badge updates and tab cleanup behavior
 
-2. **No Build Process Required**
-   - This is a vanilla JavaScript extension
-   - No compilation or bundling needed
-   - Load directly in Chromium browser Developer mode
+## Version
 
-### Contributing
+- **v4.2** (current)
+  - Enhanced detection (network + content scan + payload sniffing)
+  - Added thumbnail/referer-aware card rendering
+  - Added in-popup preview and downloader-oriented copy helpers
+  - Added badge count and improved per-tab handling
 
-1. **Fork the Repository**
-2. **Create a Feature Branch**
-   ```bash
-   git checkout -b feature/your-feature-name
-   ```
-3. **Make Changes**
-   - Follow existing code style
-   - Test thoroughly in Chromium browsers
-   - Update documentation if needed
-4. **Submit Pull Request**
+## Privacy
 
-### Testing
+- No data is sent to external servers.
+- Processing is local in your browser.
+- Link data is kept in memory and removed when tabs close.
 
-- Load extension in any Chromium browser (Chrome, Edge, Brave, etc.) with Developer mode
-- Test on various websites (YouTube, Vimeo, news sites, etc.)
-- Verify all supported formats are detected
-- Check popup functionality and clipboard operations
-- Test tab switching and cleanup behavior
+## Repository
 
-## Troubleshooting
-
-### Common Issues
-
-**No Links Detected**
-- Ensure the page has loaded completely
-- Try refreshing the page
-- Interact with media content (play videos)
-- Check if the site uses non-standard streaming methods
-
-**Extension Not Working**
-- Verify Developer mode is enabled in your Chromium browser
-- Check browser console for errors (`F12` → Console)
-- Try reloading the extension in your browser's extensions page
-- Ensure you're using a compatible Chromium browser version
-
-**Links Not Copying**
-- Modern browsers require HTTPS for clipboard access
-- Check if clipboard permissions are granted
-- Try clicking the link to open in a new tab instead
-
-### Reporting Issues
-
-Please report bugs or feature requests on GitHub:
-1. Go to [Issues page](https://github.com/jrcramos/video_link_extractor/issues)
-2. Search for existing similar issues
-3. Create a new issue with:
-   - Browser name and version (e.g., Chrome 120, Edge 120, Brave 1.60)
-   - Website URL where issue occurs
-   - Steps to reproduce
-   - Expected vs actual behavior
-
-## Privacy & Security
-
-- **No Data Collection**: The extension does not collect or transmit any personal data
-- **Local Processing**: All link detection happens locally in your browser
-- **No External Requests**: Extension doesn't communicate with external servers
-- **Temporary Storage**: Links are stored in memory only and cleared when tabs close
-- **Open Source**: Code is publicly available for security review
-
-## Version History
-
-- **v3.1**: UI/UX Improvements (Current)
-  - Fixed link truncation - links now wrap fully instead of being cut off
-  - Beautiful gradient background (purple theme) instead of plain white
-  - Modern, user-friendly interface with hover effects
-  - New transparent icons without white background
-  - Enhanced visual feedback for copy operations
-  - Improved readability and aesthetics
-  
-- **v3.0**: Manifest V3 support
-  - Improved memory management and tab cleanup
-  - Enhanced UI with copy functionality
-  - Better error handling
-
-## License
-
-This project is open source. Please check the repository for license information.
-
-## Contact
-
-- **Repository**: [https://github.com/jrcramos/video_link_extractor](https://github.com/jrcramos/video_link_extractor)
-- **Issues**: [GitHub Issues](https://github.com/jrcramos/video_link_extractor/issues)
-
----
-
-Made with ❤️ for the open source community
+- https://github.com/jrcramos/video_link_extractor
