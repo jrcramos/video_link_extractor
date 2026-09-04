@@ -2,6 +2,8 @@
 
 A powerful browser extension for **Chromium-based browsers** (Chrome, Edge, Brave, Opera, Vivaldi, etc.) that automatically sniffs, captures, previews, and exports streaming video and audio links from any webpage.
 
+![Video Link Extractor Pro Screenshot](screenshot-new.png)
+
 ---
 
 ## 🚀 Key Features
