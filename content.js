@@ -86,13 +86,32 @@
     }
   });
 
+  // 1b. Add-on: relay DRM signals (EME usage, DRM manifests) from inject.js to the background worker.
+  // inject.js queues signals until it receives __VLE_CONTENT_READY__, so nothing fired at document_start is lost.
+  const seenDrmSignals = new Set();
+  window.addEventListener('message', (event) => {
+    if (event.source !== window) return;
+    const data = event.data;
+    if (!data || data.type !== '__VLE_DRM_SIGNAL__' || !data.payload || typeof data.payload !== 'object') return;
+    let key;
+    try { key = JSON.stringify(data.payload); } catch (e) { return; }
+    if (seenDrmSignals.has(key) || seenDrmSignals.size > 300) return;
+    seenDrmSignals.add(key);
+    try {
+      chrome.runtime.sendMessage({ action: 'drmSignal', signal: data.payload, frameUrl: window.location.href });
+    } catch (e) {
+      // Extension context might be invalidated if updated
+    }
+  });
+  window.postMessage({ type: '__VLE_CONTENT_READY__' }, '*');
+
   // 2. Scan inline scripts on page for embedded player configs
   function scanInlineScripts(root) {
     try {
       const scripts = (root || document).querySelectorAll('script:not([src])');
       scripts.forEach(s => {
         const text = s.textContent;
-        if (text && (text.includes('videoplayback') || text.includes('.m3u8') || text.includes('.mpd') || text.includes('mime=video') || text.includes('mime=audio') || text.includes('streamingData') || text.includes('captionTracks') || text.includes('timedtext'))) {
+        if (text && ((window.__VLE_DRM__ && window.__VLE_DRM__.mayContainDrmUrl(text)) || text.includes('videoplayback') || text.includes('.m3u8') || text.includes('.mpd') || text.includes('mime=video') || text.includes('mime=audio') || text.includes('streamingData') || text.includes('captionTracks') || text.includes('timedtext'))) {
           window.postMessage({
             type: '__VLE_SCAN_TEXT__',
             text: text

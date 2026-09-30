@@ -75,6 +75,54 @@
     }
   }
 
+  // ---- Add-on: DRM signal channel to content.js -------------------------------------------------
+  // inject.js runs at document_start but content.js only at document_idle, so signals are queued until
+  // content.js announces itself (__VLE_CONTENT_READY__) and are then delivered in order.
+  let drmChannelReady = false;
+  const drmQueue = [];
+  const seenManifests = new Set();
+
+  function postDrmSignal(payload) {
+    window.postMessage({ type: '__VLE_DRM_SIGNAL__', payload: payload }, '*');
+  }
+
+  function emitDrmSignal(payload) {
+    try {
+      if (drmChannelReady) postDrmSignal(payload);
+      else if (drmQueue.length < 100) drmQueue.push(payload);
+    } catch (e) {}
+  }
+
+  window.addEventListener('message', (event) => {
+    if (event.source !== window || !event.data || event.data.type !== '__VLE_CONTENT_READY__' || drmChannelReady) return;
+    drmChannelReady = true;
+    drmQueue.splice(0).forEach((p) => { try { postDrmSignal(p); } catch (e) {} });
+  });
+
+  // Streaming manifests (DASH / HLS / Smooth) the page downloads: report DRM / encryption they declare
+  function reportManifestDrm(text, url) {
+    try {
+      const drm = window.__VLE_DRM__;
+      if (!drm || typeof text !== 'string' || text.length > 3000000) return;
+      // Segmented-stream manifest (Spotify player): describes the whole episode so it can be grouped / exported
+      const segmented = drm.parseSegmentManifest(text);
+      if (segmented) {
+        const segKey = `seg|${url}|${segmented.endMs}`;
+        if (!seenManifests.has(segKey)) {
+          seenManifests.add(segKey);
+          emitDrmSignal({ kind: 'segmented', url: url || '', manifest: segmented });
+        }
+        return;
+      }
+      const info = drm.analyzeManifest(text);
+      if (!info) return;
+      const key = `${url}|${text.length}`;
+      if (seenManifests.has(key) || seenManifests.size > 300) return;
+      seenManifests.add(key);
+      emitDrmSignal({ kind: 'manifest', url: url || '', info: info });
+    } catch (e) {}
+  }
+
   function scanTextForMedia(text) {
     if (!text || typeof text !== 'string' || text.length > 5000000) return;
     const found = [];
@@ -109,7 +157,9 @@
 
     const matches1 = text.match(urlRegex) || [];
     const matches2 = text.match(signatureRegex) || [];
-    found.push(...matches1, ...matches2);
+    // Add-on: DRM-protected media URLs with no extension (e.g. Spotify's encrypted audio files)
+    const drmMatches = window.__VLE_DRM__ ? window.__VLE_DRM__.findDrmUrls(text) : [];
+    found.push(...matches1, ...matches2, ...drmMatches);
 
     if (found.length > 0) {
       emitLinks(found);
@@ -150,10 +200,13 @@
               contentType.includes('text') ||
               contentType.includes('javascript') ||
               contentType.includes('mpegurl') ||
-              contentType.includes('dash+xml')
+              contentType.includes('dash+xml') ||
+              (contentType.includes('xml') && !contentType.includes('svg')) ||
+              /\.(?:mpd|m3u8|m3u)(?:[?#]|$)/i.test(response.url || '')
             ) {
               clone.text().then(text => {
                 scanTextForMedia(text);
+                reportManifestDrm(text, response.url);
               }).catch(() => {});
             }
           }
@@ -184,7 +237,10 @@
           try {
             const type = this.responseType;
             if (type === '' || type === 'text') {
-              if (this.responseText) scanTextForMedia(this.responseText);
+              if (this.responseText) {
+                scanTextForMedia(this.responseText);
+                reportManifestDrm(this.responseText, this.responseURL);
+              }
             } else if (type === 'json' && this.response) {
               scanTextForMedia(typeof this.response === 'string' ? this.response : JSON.stringify(this.response));
             }
@@ -296,4 +352,101 @@
       });
     }
   } catch (e) {}
+
+  // 6. Add-on: Encrypted Media Extensions (EME) observer - tells us the page really plays DRM content.
+  // Only real usage counts (a key request / keys attached to a player); merely probing which key systems the
+  // browser supports does not. Every wrapper calls straight through to the original and returns its result untouched.
+  (function hookEme() {
+    const drm = window.__VLE_DRM__;
+    if (!drm) return;
+    const meta = new WeakMap(); // MediaKeys / MediaKeySession -> { keySystem, robustness }
+
+    function toBytes(data) {
+      try {
+        if (data instanceof ArrayBuffer) return new Uint8Array(data.slice(0, 65536));
+        if (ArrayBuffer.isView(data)) return new Uint8Array(data.buffer, data.byteOffset, Math.min(data.byteLength, 65536));
+      } catch (e) {}
+      return new Uint8Array(0);
+    }
+
+    function wrap(proto, name, make) {
+      try {
+        if (!proto || typeof proto[name] !== 'function') return;
+        const original = proto[name];
+        proto[name] = make(original);
+      } catch (e) {}
+    }
+
+    // MediaKeySystemAccess.createMediaKeys(): remember which key system (and robustness) the keys belong to
+    wrap(window.MediaKeySystemAccess && MediaKeySystemAccess.prototype, 'createMediaKeys', function(original) {
+      return function() {
+        const promise = original.apply(this, arguments);
+        try {
+          let robustness = '';
+          try {
+            const cfg = this.getConfiguration();
+            const caps = [].concat(cfg.videoCapabilities || [], cfg.audioCapabilities || []);
+            robustness = (caps.find((c) => c && c.robustness) || {}).robustness || '';
+          } catch (e) {}
+          const info = { keySystem: this.keySystem, robustness: robustness };
+          promise.then((keys) => { try { meta.set(keys, info); } catch (e) {} }, () => {});
+        } catch (e) {}
+        return promise;
+      };
+    });
+
+    wrap(window.MediaKeys && MediaKeys.prototype, 'createSession', function(original) {
+      return function() {
+        const session = original.apply(this, arguments);
+        try {
+          const info = meta.get(this);
+          if (info && session) meta.set(session, info);
+        } catch (e) {}
+        return session;
+      };
+    });
+
+    // A license request is being generated for real content: init data carries the PSSH / key ids
+    wrap(window.MediaKeySession && MediaKeySession.prototype, 'generateRequest', function(original) {
+      return function(initDataType, initData) {
+        try {
+          const info = meta.get(this) || {};
+          const parsed = drm.initDataInfo(initDataType, toBytes(initData));
+          emitDrmSignal({
+            kind: 'eme',
+            event: 'generateRequest',
+            keySystem: info.keySystem || '',
+            system: drm.systemFromKeySystem(info.keySystem),
+            robustness: info.robustness || '',
+            initDataType: String(initDataType || ''),
+            systems: parsed.systems,
+            kids: parsed.kids
+          });
+        } catch (e) {}
+        return original.apply(this, arguments);
+      };
+    });
+
+    // Keys attached to a <video>/<audio> element
+    wrap(window.HTMLMediaElement && HTMLMediaElement.prototype, 'setMediaKeys', function(original) {
+      return function(keys) {
+        try {
+          const info = keys && meta.get(keys);
+          if (info) {
+            emitDrmSignal({
+              kind: 'eme',
+              event: 'setMediaKeys',
+              keySystem: info.keySystem || '',
+              system: drm.systemFromKeySystem(info.keySystem),
+              robustness: info.robustness || '',
+              initDataType: '',
+              systems: [],
+              kids: []
+            });
+          }
+        } catch (e) {}
+        return original.apply(this, arguments);
+      };
+    });
+  })();
 })();

@@ -21,6 +21,8 @@ document.addEventListener('DOMContentLoaded', () => {
   const filterVideoCount = document.getElementById('filterVideoCount');
   const filterAudioCount = document.getElementById('filterAudioCount');
   const filterSubtitleCount = document.getElementById('filterSubtitleCount');
+  const filterDrmCount = document.getElementById('filterDrmCount');
+  const drmBanner = document.getElementById('drmBanner');
 
   // Export elements
   const exportDropdownBtn = document.getElementById('exportDropdownBtn');
@@ -45,6 +47,9 @@ document.addEventListener('DOMContentLoaded', () => {
   let currentSortMode = 'quality'; // Default: Highest Quality First
   const selectedUrls = new Set(); // Stores explicitly selected URLs (all selected by default)
   const activeHlsPlayers = new Map(); // cardId -> Hls instance
+  let currentTabDrm = null; // page-level DRM evidence from the background worker (EME usage, DRM manifests, ...)
+  const drmProbed = new Set(); // link URLs already checked for DRM during this popup session
+  const segmentedByUrl = new Map(); // entry url -> segmented-stream description (see background applySegmentedSignal)
 
   // Theme Management
   function initTheme() {
@@ -181,6 +186,16 @@ document.addEventListener('DOMContentLoaded', () => {
   // Helper to extract specific resolution or quality badge with score
   function getStreamQuality(url) {
     if (!url || typeof url !== 'string') return { label: 'Video', tagClass: 'quality-tag', score: 100 };
+    const seg = segmentedByUrl.get(url);
+    if (seg) {
+      if (!seg.bitrate && !seg.height) return { label: seg.kind === 'audio' ? 'Audio' : 'Video', tagClass: 'quality-tag', score: seg.kind === 'audio' ? 10 : 100 };
+      if (seg.kind === 'audio') {
+        const codec = /^mp4a/i.test(seg.codec) ? 'AAC' : (seg.codec || 'Audio');
+        return { label: `${Math.round((seg.bitrate || 0) / 1000)}k ${codec}`, tagClass: 'quality-tag quality-audio', score: 10 };
+      }
+      const h = seg.height || 0;
+      return { label: h ? `${h}p` : 'Video', tagClass: h >= 2160 ? 'quality-tag quality-4k' : (h >= 1080 ? 'quality-tag quality-1080p' : (h >= 720 ? 'quality-tag quality-720p' : 'quality-tag')), score: h || 100 };
+    }
     try {
       const parsed = new URL(url);
       const itag = parsed.searchParams.get('itag');
@@ -226,6 +241,17 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Helper to categorize media type & identify category key
   function getMediaType(url) {
+    // Add-on: DRM-protected files (e.g. Spotify's encrypted podcast audio) have no recognizable extension
+    const drmInfo = window.__VLE_DRM__ ? window.__VLE_DRM__.info(url) : null;
+    if (drmInfo && drmInfo.kind === 'audio') {
+      return { category: 'audio', label: 'Audio', tagClass: 'tag-audio', isAudio: true, isDrm: true, drmProvider: drmInfo.provider, ext: drmInfo.ext, icon: '🎵' };
+    }
+    // Add-on: one stream delivered as many small requests (Spotify's player), grouped into a single entry
+    const segMeta = segmentedByUrl.get(url);
+    if (segMeta || (window.__VLE_DRM__ && window.__VLE_DRM__.segmentInfo(url))) {
+      const audio = !!segMeta && segMeta.kind === 'audio';
+      return { category: audio ? 'audio' : 'video', label: audio ? 'Audio' : 'Video', tagClass: audio ? 'tag-audio' : 'tag-video', isAudio: audio, isVideo: !audio, isSegmented: true, ext: audio ? 'm4a' : 'mp4', icon: audio ? '🎵' : '🎥' };
+    }
     const cleanUrl = url.split('?')[0].split('#')[0].toLowerCase();
     if (cleanUrl.endsWith('.vtt') || cleanUrl.endsWith('.srt') || cleanUrl.endsWith('.ttml') || cleanUrl.endsWith('.dfxp') || cleanUrl.endsWith('.sub') || url.includes('/timedtext') || url.includes('format=vtt') || url.includes('format=srt') || url.includes('type=vtt') || url.includes('type=srt') || url.includes('mime=text%2Fvtt')) {
       return { category: 'subtitle', label: 'Subtitle', tagClass: 'tag-subtitle', isSubtitle: true, icon: '💬' };
@@ -293,12 +319,204 @@ document.addEventListener('DOMContentLoaded', () => {
     setTimeout(() => URL.revokeObjectURL(url), 2000);
   }
 
+  // ---- Add-on: DRM / encryption display ------------------------------------------------------
+  // Encryption info for a link: what the background worker found (manifest / file header analysis),
+  // else what the URL alone gives away (e.g. Spotify's audio CDN). null = no evidence.
+  function getDrmInfo(item) {
+    if (item && typeof item === 'object' && item.drm) return item.drm;
+    const url = typeof item === 'string' ? item : (item ? item.url : '');
+    const known = window.__VLE_DRM__ ? window.__VLE_DRM__.info(url) : null;
+    return known ? { type: 'drm', systems: [], scheme: null, kids: [], license: [], sources: ['url'] } : null;
+  }
+
+  function isDrmConfirmed(item) {
+    const d = getDrmInfo(item);
+    return !!d && d.type === 'drm';
+  }
+
+  const DRM_SOURCE_LABELS = { manifest: 'stream manifest', init: 'file header', url: 'known DRM host', eme: 'browser DRM playback' };
+
+  // Badges for one link: "🔒 DRM", one chip per DRM system, the encryption scheme; or "🔑 AES-128" for plain HLS encryption
+  function buildDrmBadges(item, typeInfo) {
+    const d = getDrmInfo(item);
+    if (!d) return [];
+    const out = [];
+    const provider = (typeInfo && typeInfo.drmProvider) ? ` (${typeInfo.drmProvider})` : '';
+    const how = (d.sources || []).map((s) => DRM_SOURCE_LABELS[s] || s).join(', ');
+    if (d.type === 'aes') {
+      const aes = document.createElement('span');
+      aes.className = 'type-tag tag-aes drm-badge';
+      aes.textContent = `🔑 ${d.scheme || 'Encrypted'}`;
+      aes.title = 'Standard HLS encryption: the key is served openly, so yt-dlp / ffmpeg can normally download it. Not DRM.';
+      out.push(aes);
+      return out;
+    }
+    const badge = document.createElement('span');
+    badge.className = 'type-tag tag-drm drm-badge';
+    badge.textContent = '🔒 DRM';
+    badge.title = `DRM-protected stream${provider}${how ? ` - detected from: ${how}` : ''}. Listed for reference: the extension does not decrypt it, so it needs a DRM-capable player.`;
+    out.push(badge);
+    (d.systems || []).forEach((s) => {
+      const chip = document.createElement('span');
+      chip.className = 'type-tag tag-drm-sys drm-badge';
+      chip.textContent = s;
+      out.push(chip);
+    });
+    if (d.scheme) {
+      const scheme = document.createElement('span');
+      scheme.className = 'type-tag tag-drm-sys drm-badge';
+      scheme.textContent = d.scheme.toUpperCase();
+      scheme.title = 'Encryption scheme';
+      out.push(scheme);
+    }
+    if (d.kids && d.kids.length) {
+      badge.title += `\nKey ID${d.kids.length > 1 ? 's' : ''}: ${d.kids.join(', ')}`;
+    }
+    return out;
+  }
+
+  // (Re)place the DRM badges right after the type badge of a card's tag row
+  function appendDrmBadges(tagRow, item, typeInfo) {
+    tagRow.querySelectorAll('.drm-badge').forEach((el) => el.remove());
+    let ref = tagRow.firstElementChild;
+    if (!ref) return;
+    buildDrmBadges(item, typeInfo).forEach((el) => {
+      ref.after(el);
+      ref = el;
+    });
+  }
+
+  // A probe finished for a link that is already on screen: patch its card in place (keeps running previews alive)
+  function refreshCardDrm(item) {
+    const card = Array.from(linksContainer.querySelectorAll('.link-card')).find((c) => c.dataset.url === item.url);
+    const tagRow = card && card.querySelector('.tag-row');
+    if (tagRow) appendDrmBadges(tagRow, item, getMediaType(item.url));
+    updateFilterCounts(currentLinks);
+  }
+
+  // Page-level summary: the page is playing (or offering) DRM content, per the browser's own encrypted-media API
+  function renderDrmBanner() {
+    if (!drmBanner) return;
+    drmBanner.innerHTML = '';
+    const d = currentTabDrm;
+    if (!d) {
+      drmBanner.style.display = 'none';
+      return;
+    }
+    const title = document.createElement('strong');
+    title.textContent = '🔒 DRM detected on this page';
+    drmBanner.appendChild(title);
+    (d.systems || []).forEach((s) => {
+      const chip = document.createElement('span');
+      chip.className = 'type-tag tag-drm-sys';
+      chip.textContent = s;
+      drmBanner.appendChild(chip);
+    });
+    const meta = [];
+    if (d.robustness && d.robustness.length) meta.push(d.robustness.join(' / '));
+    if (d.kids && d.kids.length) meta.push(`${d.kids.length} key ID${d.kids.length > 1 ? 's' : ''}`);
+    (d.license || []).slice(0, 2).forEach((u) => {
+      try { meta.push(`license: ${new URL(u).hostname}`); } catch (e) {}
+    });
+    if (meta.length) {
+      const m = document.createElement('span');
+      m.className = 'drm-banner-meta';
+      m.textContent = meta.join(' · ');
+      drmBanner.appendChild(m);
+    }
+    const details = [];
+    if (d.kids && d.kids.length) details.push(`Key IDs:\n${d.kids.join('\n')}`);
+    if (d.license && d.license.length) details.push(`License server(s):\n${d.license.join('\n')}`);
+    details.push('Encrypted streams need a DRM-capable player. Links the page loads are still listed below; 🔒 marks the ones confirmed as encrypted.');
+    drmBanner.title = details.join('\n\n');
+    drmBanner.style.display = 'flex';
+  }
+
+  // Ask the background worker to check listed links for DRM (reads a manifest / the first 64 KB of a file).
+  // Results are stored per link, so each link is only ever checked once.
+  function scheduleDrmProbes() {
+    if (currentTabId === undefined) return;
+    currentLinks.forEach((item) => {
+      const url = item && item.url;
+      if (!url || item.drmChecked || drmProbed.has(url)) return;
+      if (getMediaType(url).category === 'subtitle' || /\.(?:mp3|wav|aac|flac|ogg|opus)(?:[?#]|$)/i.test(url)) return;
+      if (drmProbed.size >= 60) return;
+      drmProbed.add(url);
+      chrome.runtime.sendMessage({ action: 'probeDrm', tabId: currentTabId, url: url }, (res) => {
+        if (chrome.runtime.lastError || !res) return;
+        const cur = currentLinks.find((i) => i.url === url);
+        if (!cur) return;
+        if (res.checked) cur.drmChecked = true;
+        if (res.drm) {
+          cur.drm = res.drm;
+          refreshCardDrm(cur);
+        }
+        if (res.drm && res.drm.type === 'drm') {
+          // a confirmed DRM stream also means the page has DRM content: refresh the page-level banner
+          chrome.runtime.sendMessage({ action: 'getLinks', tabId: currentTabId }, (r) => {
+            if (!chrome.runtime.lastError && r) {
+              currentTabDrm = r.drm || null;
+              renderDrmBanner();
+            }
+          });
+        }
+      });
+    });
+  }
+
+  // ---- Add-on: segmented streams -> .m3u8 ------------------------------------------------------
+  function formatDuration(ms) {
+    const total = Math.round((ms || 0) / 1000);
+    const h = Math.floor(total / 3600), m = Math.floor((total % 3600) / 60), s = total % 60;
+    const pad = (n) => String(n).padStart(2, '0');
+    return h ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
+  }
+
+  function ffmpegCommand(playlistName, seg) {
+    const out = playlistName.replace(/\.m3u8$/i, '') + (seg.kind === 'audio' ? '.m4a' : '.mp4');
+    return `ffmpeg -protocol_whitelist file,http,https,tcp,tls,crypto -allowed_extensions ALL -i "${playlistName}" -c copy "${out}"`;
+  }
+
+  // HLS VOD playlist listing the init segment and every piece of the stream, in order
+  function buildSegmentPlaylist(seg, playlistName) {
+    let urls;
+    if (Array.isArray(seg.urls)) {
+      urls = seg.urls; // pieces with individually signed URLs: exactly the ones that were requested
+    } else {
+      const first = seg.first || 0, step = seg.step || seg.segLen || 4, pad = seg.pad || 0;
+      urls = [];
+      for (let i = 0; i < Math.max(1, seg.count || 1); i++) {
+        urls.push(seg.segmentUrlTemplate.split('{{segment_timestamp}}').join(String(first + i * step).padStart(pad, '0')));
+      }
+    }
+    const knownLen = seg.segLen && seg.endMs;
+    const totalSec = (seg.endMs || 0) / 1000;
+    const durOf = (i) => (knownLen ? Math.max(0.001, Math.min(seg.segLen, totalSec - i * seg.segLen)) : (seg.assumedDur || 4));
+    const target = Math.ceil(knownLen ? seg.segLen : (seg.assumedDur || 4));
+    const lines = [
+      '#EXTM3U',
+      `# ${seg.provider || 'Segmented'} ${seg.kind} stream, ${urls.length} segments${knownLen ? `, ${formatDuration(seg.endMs)}` : ''}${seg.encrypted ? ' (ENCRYPTED)' : ''}`,
+      knownLen ? '# durations from the stream manifest' : `# durations are NOT known for this stream: each segment is assumed to last ${seg.assumedDur || 4} s`,
+      Array.isArray(seg.urls) || seg.generic ? `# range inferred from the requests the page made (${seg.observed || urls.length} seen)` : '',
+      `# ${ffmpegCommand(playlistName, seg)}`,
+      '#EXT-X-VERSION:7',
+      `#EXT-X-TARGETDURATION:${target}`,
+      '#EXT-X-MEDIA-SEQUENCE:0',
+      '#EXT-X-PLAYLIST-TYPE:VOD'
+    ].filter(Boolean);
+    if (seg.initUrl) lines.push(`#EXT-X-MAP:URI="${seg.initUrl}"`);
+    urls.forEach((u, i) => lines.push(`#EXTINF:${durOf(i).toFixed(3)},`, u));
+    lines.push('#EXT-X-ENDLIST');
+    return lines.join('\n') + '\n';
+  }
+
   // Update counts on filter pills
   function updateFilterCounts(links) {
     let streams = 0;
     let videos = 0;
     let audio = 0;
     let subtitles = 0;
+    let drmCount = 0;
 
     links.forEach(item => {
       const url = typeof item === 'string' ? item : item.url;
@@ -307,6 +525,7 @@ document.addEventListener('DOMContentLoaded', () => {
       else if (typeInfo.category === 'audio') audio++;
       else if (typeInfo.category === 'subtitle') subtitles++;
       else videos++;
+      if (isDrmConfirmed(item)) drmCount++;
     });
 
     filterAllCount.textContent = links.length;
@@ -314,6 +533,7 @@ document.addEventListener('DOMContentLoaded', () => {
     filterVideoCount.textContent = videos;
     filterAudioCount.textContent = audio;
     if (filterSubtitleCount) filterSubtitleCount.textContent = subtitles;
+    if (filterDrmCount) filterDrmCount.textContent = drmCount;
   }
 
   // Filter and sort links (Highest Quality First by default)
@@ -323,8 +543,10 @@ document.addEventListener('DOMContentLoaded', () => {
       const referer = (typeof item === 'object' && item.referer) ? item.referer : '';
       const typeInfo = getMediaType(url);
 
-      // 1. Pill Filter
-      if (activeFilter !== 'all' && typeInfo.category !== activeFilter) {
+      // 1. Pill Filter ('drm' is a cross-category filter: any link confirmed as DRM-protected)
+      if (activeFilter === 'drm') {
+        if (!isDrmConfirmed(item)) return false;
+      } else if (activeFilter !== 'all' && typeInfo.category !== activeFilter) {
         return false;
       }
 
@@ -413,12 +635,15 @@ document.addEventListener('DOMContentLoaded', () => {
       const uniqueMap = new Map();
       (linksData || []).forEach(item => {
         const rawUrl = typeof item === 'string' ? item : (item ? item.url : '');
-        const norm = normalizeUrl(rawUrl);
+        // a grouped stream may be addressed by a .ts / .m4s piece: those are only ever shown as that one group
+        const norm = (item && typeof item === 'object' && item.segmented) ? rawUrl : normalizeUrl(rawUrl);
         if (norm && !uniqueMap.has(norm)) {
           uniqueMap.set(norm, typeof item === 'string' ? { url: norm } : { ...item, url: norm });
         }
       });
       currentLinks = Array.from(uniqueMap.values());
+      segmentedByUrl.clear();
+      currentLinks.forEach((item) => { if (item && item.segmented) segmentedByUrl.set(item.url, item.segmented); });
 
       // Select all by default on first load or when new items arrive
       currentLinks.forEach(item => {
@@ -429,6 +654,8 @@ document.addEventListener('DOMContentLoaded', () => {
     if (pageUrl !== undefined) {
       currentPageUrl = pageUrl || '';
     }
+
+    renderDrmBanner();
 
     // Clean up active Hls player instances
     activeHlsPlayers.forEach(hls => {
@@ -449,6 +676,7 @@ document.addEventListener('DOMContentLoaded', () => {
           <div class="empty-icon">🎬</div>
           <div><strong>No media streams detected yet.</strong></div>
           <div style="font-size: 12px; margin-top: 6px; opacity: 0.85;">Play a video or use <strong>📱 Mobile Scan</strong> to check for direct streams.</div>
+          ${currentTabDrm ? '<div style="font-size: 12px; margin-top: 6px; opacity: 0.85;">🔒 This page uses DRM, but has not exposed a stream URL yet. Start playback and reopen this popup.</div>' : ''}
         </div>
       `;
       updateSelectionUI();
@@ -486,6 +714,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const card = document.createElement('div');
       card.className = `link-card ${isSelected ? 'is-selected' : 'not-selected'}`;
       card.id = cardId;
+      card.dataset.url = url;
 
       // Card Header / Info
       const cardTop = document.createElement('div');
@@ -546,6 +775,20 @@ document.addEventListener('DOMContentLoaded', () => {
       typeBadge.textContent = typeInfo.label;
       tagRow.appendChild(typeBadge);
 
+      // DRM / encryption badges (from manifest / file-header analysis, or the URL itself)
+      appendDrmBadges(tagRow, item, typeInfo);
+
+      if (typeInfo.isSegmented) {
+        const segMeta = segmentedByUrl.get(url);
+        const segBadge = document.createElement('span');
+        segBadge.className = 'type-tag tag-seg';
+        segBadge.textContent = segMeta ? `🧩 ${segMeta.count} segments${segMeta.endMs ? ` · ${formatDuration(segMeta.endMs)}` : ''}` : '🧩 Segmented';
+        segBadge.title = segMeta && segMeta.generic
+          ? `One stream fetched as numbered pieces (${segMeta.observed} seen), listed once. Range and durations are inferred from the requests. Use "⬇ .m3u8" to export.`
+          : 'One stream delivered as many small pieces, listed once. Use "⬇ .m3u8" to export the full segment list.';
+        tagRow.appendChild(segBadge);
+      }
+
       // Smart Quality/Resolution badge (show only if distinct from type badge)
       if (qualityInfo && qualityInfo.label !== typeInfo.label && qualityInfo.label !== 'Video' && qualityInfo.label !== 'Audio' && qualityInfo.label !== 'Subtitle') {
         const qualityBadge = document.createElement('span');
@@ -560,7 +803,7 @@ document.addEventListener('DOMContentLoaded', () => {
         sizeSpan.className = 'size-badge';
         sizeSpan.textContent = `📦 ${formatFileSize(sizeBytes)}`;
         tagRow.appendChild(sizeSpan);
-      } else if (!typeInfo.isStream) {
+      } else if (!typeInfo.isStream && !typeInfo.isSegmented) {
         // Probe size asynchronously in background for direct media files
         const sizeSpan = document.createElement('span');
         sizeSpan.className = 'size-badge';
@@ -620,6 +863,7 @@ document.addEventListener('DOMContentLoaded', () => {
       previewBtn.className = 'action-btn btn-preview';
       previewBtn.innerHTML = '▶ Play';
       previewBtn.title = 'Test play live stream / media in popup';
+      if (typeInfo.isSegmented) previewBtn.style.display = 'none'; // a single piece is not playable on its own
 
       // 2. Direct Download Button
       const downloadBtn = document.createElement('button');
@@ -627,8 +871,21 @@ document.addEventListener('DOMContentLoaded', () => {
       downloadBtn.innerHTML = '⬇ Save';
       downloadBtn.title = 'Download file directly to browser';
 
+      if (typeInfo.isSegmented) {
+        downloadBtn.innerHTML = '⬇ .m3u8';
+        downloadBtn.title = 'Export an .m3u8 playlist with every segment of this stream (open it with ffmpeg / VLC / mpv)';
+      }
+
       downloadBtn.addEventListener('click', () => {
-        const fallbackExt = typeInfo.isSubtitle ? 'vtt' : (typeInfo.isAudio ? 'mp3' : (typeInfo.isHls ? 'm3u8' : 'mp4'));
+        if (typeInfo.isSegmented) {
+          const segMeta = segmentedByUrl.get(url);
+          if (!segMeta) { triggerCopied(downloadBtn, '⚠️ Manifest not captured'); return; }
+          const name = getCleanFilename(url, 'm3u8');
+          downloadBlob(buildSegmentPlaylist(segMeta, name), name, 'application/vnd.apple.mpegurl');
+          triggerCopied(downloadBtn, '✓ Playlist');
+          return;
+        }
+        const fallbackExt = typeInfo.ext || (typeInfo.isSubtitle ? 'vtt' : (typeInfo.isAudio ? 'mp3' : (typeInfo.isHls ? 'm3u8' : 'mp4')));
         const filename = getCleanFilename(url, fallbackExt);
 
         if (chrome.downloads && chrome.downloads.download) {
@@ -719,7 +976,18 @@ document.addEventListener('DOMContentLoaded', () => {
       ytdlpBtn.innerHTML = 'yt-dlp';
       ytdlpBtn.title = 'Copy yt-dlp command with headers';
 
+      if (typeInfo.isSegmented) {
+        ytdlpBtn.innerHTML = 'ffmpeg';
+        ytdlpBtn.title = 'Copy the ffmpeg command that assembles the exported .m3u8 into one file';
+      }
+
       ytdlpBtn.addEventListener('click', () => {
+        if (typeInfo.isSegmented) {
+          const segMeta = segmentedByUrl.get(url);
+          if (!segMeta) { triggerCopied(ytdlpBtn, '⚠️ Manifest not captured'); return; }
+          navigator.clipboard.writeText(ffmpegCommand(getCleanFilename(url, 'm3u8'), segMeta)).then(() => triggerCopied(ytdlpBtn, '✓ Cmd'));
+          return;
+        }
         let cmd = `yt-dlp`;
         if (referer) {
           try {
@@ -761,6 +1029,18 @@ document.addEventListener('DOMContentLoaded', () => {
               audioEl.autoplay = true;
               audioEl.src = url;
               previewBox.appendChild(audioEl);
+
+              if (typeInfo.isDrm) {
+                audioEl.addEventListener('error', () => {
+                  const note = document.createElement('div');
+                  note.className = 'preview-note preview-note-error';
+                  note.style.color = '#fca5a5';
+                  note.innerHTML = `🔒 <strong>DRM-protected</strong>: the popup player can't decrypt this ${typeInfo.drmProvider} stream.<br>Play it in a DRM-capable player instead.`;
+                  if (!previewBox.querySelector('.preview-note-error')) {
+                    previewBox.appendChild(note);
+                  }
+                });
+              }
             } else {
               const videoEl = document.createElement('video');
               videoEl.controls = true;
@@ -895,6 +1175,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     updateSelectionUI();
+    if (linksData !== undefined) scheduleDrmProbes();
   }
 
   // Request links for active tab
@@ -912,6 +1193,7 @@ document.addEventListener('DOMContentLoaded', () => {
           if (response.mobileScanMode && mobileModeSelect) {
             mobileModeSelect.value = response.mobileScanMode;
           }
+          currentTabDrm = response.drm || null;
           renderLinks(response.links || [], response.pageUrl || currentPageUrl);
         }
       });
@@ -921,6 +1203,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!chrome.runtime.lastError) {
           chrome.runtime.sendMessage({ action: 'getLinks', tabId: currentTabId }, (res) => {
             if (res) {
+              currentTabDrm = res.drm || null;
               renderLinks(res.links || [], res.pageUrl || currentPageUrl);
             }
           });
@@ -1029,7 +1312,17 @@ document.addEventListener('DOMContentLoaded', () => {
 
       selected.forEach(item => {
         const url = typeof item === 'string' ? item : item.url;
+        if (getMediaType(url).isSegmented) {
+          content += `# segmented stream (no single URL): use its "⬇ .m3u8" export with ffmpeg\n\n`;
+          return;
+        }
         const referer = (typeof item === 'object' && item.referer) ? item.referer : currentPageUrl;
+        const drmInfo = getDrmInfo(item);
+        if (drmInfo && drmInfo.type === 'drm') {
+          // batch files ignore '#' lines; flag DRM streams so a failed download is not a mystery
+          const systems = (drmInfo.systems || []).join(', ').replace(/[\r\n]/g, ' ');
+          content += `# DRM-protected${systems ? ` (${systems})` : ''}: encrypted, yt-dlp cannot download this\n`;
+        }
         if (referer) {
           try {
             const origin = new URL(referer).origin;
@@ -1059,6 +1352,7 @@ document.addEventListener('DOMContentLoaded', () => {
       selected.forEach((item) => {
         const url = typeof item === 'string' ? item : item.url;
         const typeInfo = getMediaType(url);
+        if (typeInfo.isSegmented) return; // a segmented stream has its own playlist export
         const qualInfo = getStreamQuality(url);
         const qualLabel = qualInfo ? qualInfo.label : typeInfo.label;
         const filename = getCleanFilename(url);
@@ -1096,6 +1390,8 @@ document.addEventListener('DOMContentLoaded', () => {
           referer,
           poster,
           isMobile,
+          drm: getDrmInfo(item),
+          segmented: segmentedByUrl.get(url) || null,
           type: typeInfo.label,
           category: typeInfo.category,
           extractedAt: new Date().toISOString()

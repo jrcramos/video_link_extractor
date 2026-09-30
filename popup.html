@@ -640,6 +640,54 @@
       color: #5eead4;
     }
 
+    .tag-drm {
+      background: rgba(244, 63, 94, 0.18);
+      border: 1px solid rgba(244, 63, 94, 0.4);
+      color: #fda4af;
+    }
+
+    .tag-drm-sys {
+      background: rgba(244, 63, 94, 0.08);
+      border: 1px solid rgba(244, 63, 94, 0.28);
+      color: #fecdd3;
+      text-transform: none;
+    }
+
+    .tag-seg {
+      background: rgba(56, 189, 248, 0.14);
+      border: 1px solid rgba(56, 189, 248, 0.38);
+      color: #7dd3fc;
+      text-transform: none;
+    }
+
+    .tag-aes {
+      background: rgba(234, 179, 8, 0.15);
+      border: 1px solid rgba(234, 179, 8, 0.4);
+      color: #fde68a;
+    }
+
+    .drm-banner {
+      display: none;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+      margin: 0 0 8px;
+      padding: 7px 10px;
+      border-radius: 8px;
+      font-size: 11px;
+      background: rgba(244, 63, 94, 0.1);
+      border: 1px solid rgba(244, 63, 94, 0.32);
+      color: #fecdd3;
+    }
+
+    .drm-banner strong {
+      color: #fda4af;
+    }
+
+    .drm-banner .drm-banner-meta {
+      opacity: 0.85;
+    }
+
     .quality-tag {
       font-size: 9px;
       font-weight: 700;
@@ -1005,9 +1053,13 @@
         <button class="filter-pill" data-filter="video">Videos <span id="filterVideoCount" class="pill-badge">0</span></button>
         <button class="filter-pill" data-filter="audio">Audio <span id="filterAudioCount" class="pill-badge">0</span></button>
         <button class="filter-pill" data-filter="subtitle">💬 Subs <span id="filterSubtitleCount" class="pill-badge">0</span></button>
+        <button class="filter-pill" data-filter="drm" title="Streams confirmed as DRM-protected">🔒 DRM <span id="filterDrmCount" class="pill-badge">0</span></button>
       </div>
     </div>
-    
+
+    <!-- Page-level DRM detection (EME usage, DRM manifests) -->
+    <div id="drmBanner" class="drm-banner"></div>
+
     <!-- Links List -->
     <div id="links-container"></div>
     <div id="status"></div>
@@ -1025,6 +1077,7 @@
 
   <script src="hls.min.js"></script>
   <script src="qrcode.min.js"></script>
+  <script src="drm-streams.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>
