@@ -99,6 +99,7 @@ Players that fetch a stream as many small numbered pieces (`seg_0001.mp4`, `chun
 | **▶ Play** / **⏹ Stop** | Preview live HLS stream or video file right in the popup |
 | **⬇ Save** | 1-Click direct browser download |
 | **+ Ref** | Copies `URL\|Referer` (ideal for custom batch scripts) |
+| **+ Name** | Copies `URL\|Referer\|Name`. The name comes from the page (structured data, `og:title`, or the tab title without the site name), else the file name in the URL |
 | **yt-dlp** | Copies complete `yt-dlp --add-header ... "URL"` command |
 | **Copy** | Copies raw media URL |
 

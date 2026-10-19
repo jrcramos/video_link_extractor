@@ -42,6 +42,7 @@ document.addEventListener('DOMContentLoaded', () => {
   let currentLinks = [];
   let currentPageUrl = '';
   let currentPageTitle = '';
+  let currentVideoName = ''; // name read from the page's metadata (og:title, JSON-LD, ...)
   let activeFilter = 'all';
   let searchQuery = '';
   let currentSortMode = 'quality'; // Default: Highest Quality First
@@ -271,11 +272,75 @@ document.addEventListener('DOMContentLoaded', () => {
     return { category: 'video', label: 'Video', tagClass: 'tag-video', isVideo: true, icon: '🎥' };
   }
 
+  // Runs inside the page (top frame): best guess at the video's real name from page metadata
+  function readPageVideoName() {
+    const clean = (s) => (typeof s === 'string' ? s.replace(/\s+/g, ' ').trim() : '');
+    const meta = (sel) => { const el = document.querySelector(sel); return el ? clean(el.getAttribute('content')) : ''; };
+
+    // 1. JSON-LD structured data (VideoObject, Episode, Movie, ...)
+    const mediaTypes = /^(VideoObject|Movie|TVEpisode|Episode|PodcastEpisode|Clip|AudioObject|MusicRecording)$/;
+    let ldName = '';
+    const walk = (node) => {
+      if (ldName || !node || typeof node !== 'object') return;
+      if (Array.isArray(node)) { node.forEach(walk); return; }
+      const types = [].concat(node['@type'] || []);
+      if (types.some(t => mediaTypes.test(t)) && clean(node.name)) { ldName = clean(node.name); return; }
+      Object.values(node).forEach(walk);
+    };
+    document.querySelectorAll('script[type="application/ld+json"]').forEach(s => {
+      try { walk(JSON.parse(s.textContent)); } catch (e) {}
+    });
+
+    const siteName = meta('meta[property="og:site_name"]');
+    const h1 = clean((document.querySelector('h1') || {}).textContent);
+    const candidates = [
+      ldName,
+      meta('meta[property="og:title"]'),
+      meta('meta[name="twitter:title"]'),
+      meta('meta[itemprop="name"]'),
+      clean(document.title),
+      h1
+    ];
+    let name = candidates.find(Boolean) || '';
+    // "Clip Name : Free Download, ..." -> the page heading, when the title merely starts with it
+    if (!ldName && h1 && h1.length >= 3 && name.length > h1.length && name.toLowerCase().startsWith(h1.toLowerCase())) name = h1;
+    return { name, siteName };
+  }
+
+  // Strip site suffixes / notification counters from a title: "(3) My Clip | SiteName" -> "My Clip"
+  function tidyTitle(title, siteName = '') {
+    let t = (title || '').replace(/^\(\d+\+?\)\s*/, '').replace(/\s+/g, ' ').trim();
+    t = t.replace(/\s+[-–—|·•:]\s+YouTube$/i, '');
+    if (siteName) {
+      const esc = siteName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      t = t.replace(new RegExp(`\\s+[-–—|·•:]\\s+${esc}$`, 'i'), '').replace(new RegExp(`^${esc}\\s+[-–—|·•:]\\s+`, 'i'), '');
+    }
+    return t.trim();
+  }
+
+  // Make a name safe to use as a file name (and as the last field of URL|Ref|Name)
+  function toSafeName(name) {
+    return (name || '').replace(/[/\\?%*:|"<>\u0000-\u001f]/g, '_').replace(/[\s.]+$/, '').trim().slice(0, 150);
+  }
+
+  // Video name for a stream: page metadata, else tab title, else the file name in the URL
+  function getVideoName(url) {
+    const fromPage = toSafeName(currentVideoName) || toSafeName(tidyTitle(currentPageTitle));
+    if (fromPage) return fromPage;
+    try {
+      const path = new URL(url).pathname;
+      const last = decodeURIComponent(path.substring(path.lastIndexOf('/') + 1));
+      return toSafeName(last.replace(/\.[a-z0-9]{2,5}$/i, '')) || 'video';
+    } catch (e) {
+      return 'video';
+    }
+  }
+
   // Infer clean filename for downloads & exports with page title support
   function getCleanFilename(url, fallbackExt = 'mp4') {
     try {
-      if (currentPageTitle) {
-        const sanitized = currentPageTitle.replace(/ - YouTube$/, '').replace(/[/\\?%*:|"<>]/g, '_').trim();
+      if (currentVideoName || currentPageTitle) {
+        const sanitized = toSafeName(currentVideoName) || toSafeName(tidyTitle(currentPageTitle));
         if (sanitized) {
           const qual = getStreamQuality(url);
           const qualSuffix = qual ? `_${qual.label.replace(/[^a-zA-Z0-9]/g, '')}` : '';
@@ -838,8 +903,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
       // Title Display
       let cleanTitle = '';
-      if (currentPageTitle) {
-        cleanTitle = currentPageTitle.replace(/ - YouTube$/, '').trim();
+      if (currentVideoName || currentPageTitle) {
+        cleanTitle = currentVideoName || tidyTitle(currentPageTitle);
         const titleEl = document.createElement('div');
         titleEl.className = 'card-title';
         titleEl.textContent = cleanTitle;
@@ -967,6 +1032,19 @@ document.addEventListener('DOMContentLoaded', () => {
         const payload = referer ? `${url}|${referer}` : url;
         navigator.clipboard.writeText(payload).then(() => {
           triggerCopied(pipedBtn, '✓ Copied');
+        });
+      });
+
+      // 5b. Copy URL|Referer|Name Button
+      const namedBtn = document.createElement('button');
+      namedBtn.className = 'action-btn btn-piped';
+      namedBtn.innerHTML = '+ Name';
+      namedBtn.title = 'Copy URL, Referer and video name (URL|Ref|Name)';
+
+      namedBtn.addEventListener('click', () => {
+        const payload = `${url}|${referer || ''}|${getVideoName(url)}`;
+        navigator.clipboard.writeText(payload).then(() => {
+          triggerCopied(namedBtn, '✓ Copied');
         });
       });
 
@@ -1168,6 +1246,7 @@ document.addEventListener('DOMContentLoaded', () => {
       actionsBar.appendChild(qrBtn);
       actionsBar.appendChild(copyBtn);
       actionsBar.appendChild(pipedBtn);
+      actionsBar.appendChild(namedBtn);
       actionsBar.appendChild(ytdlpBtn);
       card.appendChild(actionsBar);
 
@@ -1185,6 +1264,19 @@ document.addEventListener('DOMContentLoaded', () => {
       currentTabId = tabs[0].id;
       currentPageUrl = tabs[0].url || '';
       currentPageTitle = tabs[0].title || '';
+
+      // Read the video name from the page's metadata (fails silently on chrome:// and store pages)
+      if (chrome.scripting) {
+        chrome.scripting.executeScript({ target: { tabId: currentTabId }, func: readPageVideoName }, (results) => {
+          if (chrome.runtime.lastError || !results || !results[0] || !results[0].result) return;
+          const { name, siteName } = results[0].result;
+          currentVideoName = tidyTitle(name, siteName);
+          document.querySelectorAll('.card-title').forEach(el => {
+            el.textContent = currentVideoName;
+            el.title = currentVideoName;
+          });
+        });
+      }
 
       chrome.runtime.sendMessage({ action: 'getLinks', tabId: currentTabId }, (response) => {
         if (chrome.runtime.lastError) {
@@ -1382,7 +1474,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const typeInfo = getMediaType(url);
         const qualInfo = getStreamQuality(url);
         return {
-          title: currentPageTitle,
+          title: currentVideoName || currentPageTitle,
           url,
           quality: qualInfo ? qualInfo.label : typeInfo.label,
           sizeBytes: sizeBytes,
