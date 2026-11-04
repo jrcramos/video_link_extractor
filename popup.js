@@ -974,14 +974,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
         if (chrome.downloads && chrome.downloads.download) {
           downloadBtn.textContent = '⏳ Saving...';
-          // The background worker starts the download so the stream's Referer / Origin can be sent with it
-          chrome.runtime.sendMessage({
-            action: 'downloadMedia',
+          chrome.downloads.download({
             url: url,
             filename: filename,
-            referer: referer || ''
-          }, (res) => {
-            if (chrome.runtime.lastError || !res || !res.ok) {
+            saveAs: false
+          }, (downloadId) => {
+            if (chrome.runtime.lastError || !downloadId) {
               const a = document.createElement('a');
               a.href = url;
               a.download = filename;

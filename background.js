@@ -1144,74 +1144,6 @@ const probeLinkDrm = async (tabId, rawUrl) => {
   }
 };
 
-// ---- Save button downloads ---------------------------------------------------------------------
-// chrome.downloads cannot set Referer / Origin itself, and hotlink-protected hosts answer 403 without them.
-// A session rule adds them to requests made outside any tab (where downloads run) to that one host.
-const DOWNLOAD_RULE_BASE = 1100;
-let downloadRuleSeq = 0;
-const downloadRules = new Map(); // downloadId -> session rule id
-
-const releaseDownloadRule = (downloadId) => {
-  const id = downloadRules.get(downloadId);
-  if (!id) return;
-  downloadRules.delete(downloadId);
-  chrome.declarativeNetRequest.updateSessionRules({ removeRuleIds: [id] }).catch(() => {});
-};
-
-if (chrome.downloads && chrome.downloads.onChanged) {
-  chrome.downloads.onChanged.addListener((delta) => {
-    if (delta && delta.state && delta.state.current === 'complete') releaseDownloadRule(delta.id);
-  });
-}
-
-const downloadWithReferer = async (url, filename, referer) => {
-  const dnr = chrome.declarativeNetRequest;
-  let host = '';
-  let origin = '';
-  try { host = new URL(url).hostname; } catch (e) {}
-  try { origin = new URL(referer).origin; } catch (e) {}
-  let ruleId = 0;
-  if (dnr && dnr.updateSessionRules && host && origin && /^https?:/i.test(origin)) {
-    ruleId = DOWNLOAD_RULE_BASE + (downloadRuleSeq++ % 90);
-    try {
-      await dnr.updateSessionRules({
-        removeRuleIds: [ruleId],
-        addRules: [{
-          id: ruleId,
-          priority: 4,
-          action: {
-            type: 'modifyHeaders',
-            requestHeaders: [
-              { header: 'Referer', operation: 'set', value: referer },
-              { header: 'Origin', operation: 'set', value: origin }
-            ]
-          },
-          condition: { requestDomains: [host], tabIds: [chrome.tabs.TAB_ID_NONE], resourceTypes: ['other', 'media', 'xmlhttprequest'] }
-        }]
-      });
-    } catch (e) {
-      ruleId = 0;
-    }
-  }
-  return new Promise((resolve) => {
-    const options = { url: url, saveAs: false };
-    // chrome.downloads rejects names with path separators / characters Windows does not allow (e.g. from a
-    // percent-decoded URL path); replace only those so the download does not fail
-    const safeName = String(filename || '').replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_').replace(/^[\s.]+|[\s.]+$/g, '');
-    if (safeName) options.filename = safeName;
-    chrome.downloads.download(options, (downloadId) => {
-      const err = chrome.runtime.lastError;
-      if (err || !downloadId) {
-        if (ruleId) dnr.updateSessionRules({ removeRuleIds: [ruleId] }).catch(() => {});
-        resolve({ ok: false, error: err ? err.message : 'download failed' });
-        return;
-      }
-      if (ruleId) downloadRules.set(downloadId, ruleId);
-      resolve({ ok: true, downloadId: downloadId });
-    });
-  });
-};
-
 // MESSAGE HANDLING
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   // From popup: get links + referers + posters + sizes
@@ -1303,17 +1235,6 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       chrome.storage.local.set({ mobileScanMode: mobileScanMode });
     }
     sendResponse({ success: true, mode: mobileScanMode });
-  }
-  // From popup: Save button (download with the stream's Referer)
-  else if (request.action === 'downloadMedia') {
-    if (!chrome.downloads || !request.url) {
-      sendResponse({ ok: false });
-      return false;
-    }
-    downloadWithReferer(request.url, request.filename || '', request.referer || '')
-      .then((result) => sendResponse(result))
-      .catch(() => sendResponse({ ok: false }));
-    return true;
   }
   // From popup: enable preview referer and CORS rules
   else if (request.action === 'preparePreview') {
