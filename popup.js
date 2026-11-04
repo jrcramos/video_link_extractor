@@ -537,9 +537,26 @@ document.addEventListener('DOMContentLoaded', () => {
     return h ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
   }
 
+  // Copied commands put values inside double quotes, where bash and PowerShell still run `...` / $(...), "\" escapes
+  // the closing quote, and PowerShell also closes a string on a curly quote. Such characters come from the page
+  // (URL, Referer, title), so neutralise them. Ordinary values contain none of them and are copied unchanged.
+  const SHELL_UNSAFE = /[$`\\"“-‟]/g;
+  // In a URL the percent-encoded form names the same resource
+  function shellSafeUrl(u) {
+    return String(u || '').replace(SHELL_UNSAFE, (c) => encodeURIComponent(c));
+  }
+  function shellSafeName(name) {
+    return String(name || '').replace(SHELL_UNSAFE, '_');
+  }
+  // File name of a segmented stream's playlist: the saved file and the ffmpeg command must use the same one
+  function segmentPlaylistName(url) {
+    return shellSafeName(getCleanFilename(url, 'm3u8'));
+  }
+
   function ffmpegCommand(playlistName, seg) {
-    const out = playlistName.replace(/\.m3u8$/i, '') + (seg.kind === 'audio' ? '.m4a' : '.mp4');
-    return `ffmpeg -protocol_whitelist file,http,https,tcp,tls,crypto -allowed_extensions ALL -i "${playlistName}" -c copy "${out}"`;
+    const name = shellSafeName(playlistName);
+    const out = name.replace(/\.m3u8$/i, '') + (seg.kind === 'audio' ? '.m4a' : '.mp4');
+    return `ffmpeg -protocol_whitelist file,http,https,tcp,tls,crypto -allowed_extensions ALL -i "${name}" -c copy "${out}"`;
   }
 
   // HLS VOD playlist listing the init segment and every piece of the stream, in order
@@ -756,11 +773,13 @@ document.addEventListener('DOMContentLoaded', () => {
     const filtered = getFilteredLinks();
 
     if (filtered.length === 0) {
-      linksContainer.innerHTML = `
-        <div class="no-results">
-          🔍 No media found matching "<strong>${searchQuery}</strong>" in ${activeFilter.toUpperCase()}.
-        </div>
-      `;
+      // Built from text nodes: the search text is user input, not markup
+      const noResults = document.createElement('div');
+      noResults.className = 'no-results';
+      const query = document.createElement('strong');
+      query.textContent = searchQuery;
+      noResults.append('🔍 No media found matching "', query, `" in ${activeFilter.toUpperCase()}.`);
+      linksContainer.replaceChildren(noResults);
       updateSelectionUI();
       return;
     }
@@ -945,7 +964,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (typeInfo.isSegmented) {
           const segMeta = segmentedByUrl.get(url);
           if (!segMeta) { triggerCopied(downloadBtn, '⚠️ Manifest not captured'); return; }
-          const name = getCleanFilename(url, 'm3u8');
+          const name = segmentPlaylistName(url);
           downloadBlob(buildSegmentPlaylist(segMeta, name), name, 'application/vnd.apple.mpegurl');
           triggerCopied(downloadBtn, '✓ Playlist');
           return;
@@ -955,12 +974,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
         if (chrome.downloads && chrome.downloads.download) {
           downloadBtn.textContent = '⏳ Saving...';
-          chrome.downloads.download({
+          // The background worker starts the download so the stream's Referer / Origin can be sent with it
+          chrome.runtime.sendMessage({
+            action: 'downloadMedia',
             url: url,
             filename: filename,
-            saveAs: false
-          }, (downloadId) => {
-            if (chrome.runtime.lastError || !downloadId) {
+            referer: referer || ''
+          }, (res) => {
+            if (chrome.runtime.lastError || !res || !res.ok) {
               const a = document.createElement('a');
               a.href = url;
               a.download = filename;
@@ -1063,19 +1084,19 @@ document.addEventListener('DOMContentLoaded', () => {
         if (typeInfo.isSegmented) {
           const segMeta = segmentedByUrl.get(url);
           if (!segMeta) { triggerCopied(ytdlpBtn, '⚠️ Manifest not captured'); return; }
-          navigator.clipboard.writeText(ffmpegCommand(getCleanFilename(url, 'm3u8'), segMeta)).then(() => triggerCopied(ytdlpBtn, '✓ Cmd'));
+          navigator.clipboard.writeText(ffmpegCommand(segmentPlaylistName(url), segMeta)).then(() => triggerCopied(ytdlpBtn, '✓ Cmd'));
           return;
         }
         let cmd = `yt-dlp`;
         if (referer) {
           try {
             const origin = new URL(referer).origin;
-            cmd += ` --add-header "Referer: ${referer}" --add-header "Origin: ${origin}"`;
+            cmd += ` --add-header "Referer: ${shellSafeUrl(referer)}" --add-header "Origin: ${shellSafeUrl(origin)}"`;
           } catch (e) {
-            cmd += ` --add-header "Referer: ${referer}"`;
+            cmd += ` --add-header "Referer: ${shellSafeUrl(referer)}"`;
           }
         }
-        cmd += ` "${url}"`;
+        cmd += ` "${shellSafeUrl(url)}"`;
 
         navigator.clipboard.writeText(cmd).then(() => {
           triggerCopied(ytdlpBtn, '✓ Cmd');
@@ -1400,7 +1421,9 @@ document.addEventListener('DOMContentLoaded', () => {
       }
 
       let content = `# Video Link Extractor Pro - Batch Download List\n`;
-      content += `# Usage: yt-dlp -a yt-dlp-batch.txt\n\n`;
+      content += `# Usage: yt-dlp -a yt-dlp-batch.txt\n`;
+      // yt-dlp reads every non-comment line of a batch file as a URL, so options cannot go in here
+      content += `# yt-dlp only reads the URLs below. A link that needs its Referer: yt-dlp --add-header "Referer: <referer>" "<url>"\n\n`;
 
       selected.forEach(item => {
         const url = typeof item === 'string' ? item : item.url;
@@ -1415,14 +1438,7 @@ document.addEventListener('DOMContentLoaded', () => {
           const systems = (drmInfo.systems || []).join(', ').replace(/[\r\n]/g, ' ');
           content += `# DRM-protected${systems ? ` (${systems})` : ''}: encrypted, yt-dlp cannot download this\n`;
         }
-        if (referer) {
-          try {
-            const origin = new URL(referer).origin;
-            content += `--add-header "Referer: ${referer}" --add-header "Origin: ${origin}"\n`;
-          } catch (e) {
-            content += `--add-header "Referer: ${referer}"\n`;
-          }
-        }
+        if (referer) content += `# Referer: ${String(referer).replace(/[\r\n]/g, ' ')}\n`;
         content += `${url}\n\n`;
       });
 

@@ -309,49 +309,9 @@
     }
   } catch (e) {}
 
-  // 5. Hook dashjs MediaPlayer.prototype.attachSource
-  function hookDashPrototype(dashjsObj) {
-    try {
-      if (dashjsObj && dashjsObj.MediaPlayer && !dashjsObj.__vle_hooked) {
-        dashjsObj.__vle_hooked = true;
-        const origCreate = dashjsObj.MediaPlayer;
-        dashjsObj.MediaPlayer = function() {
-          const player = origCreate.apply(this, arguments);
-          if (player && typeof player.attachSource === 'function' && !player.__vle_hooked) {
-            player.__vle_hooked = true;
-            const origAttach = player.attachSource;
-            player.attachSource = function(url) {
-              try {
-                if (typeof url === 'string') {
-                  scanTextForMedia(url);
-                }
-              } catch (e) {}
-              return origAttach.apply(this, arguments);
-            };
-          }
-          return player;
-        };
-      }
-    } catch (e) {}
-  }
-
-  try {
-    if (window.dashjs) {
-      hookDashPrototype(window.dashjs);
-    } else {
-      let _dashjs = window.dashjs;
-      Object.defineProperty(window, 'dashjs', {
-        set: function(val) {
-          _dashjs = val;
-          hookDashPrototype(val);
-        },
-        get: function() {
-          return _dashjs;
-        },
-        configurable: true
-      });
-    }
-  } catch (e) {}
+  // 5. dash.js needs no hook: its manifest requests go through the fetch / XHR hooks above and the background
+  // sniffer. (Wrapping dashjs.MediaPlayer never reached attachSource, which lives on MediaPlayer().create(),
+  // and dropped static members such as dashjs.MediaPlayer.events that pages use.)
 
   // 6. Add-on: Encrypted Media Extensions (EME) observer - tells us the page really plays DRM content.
   // Only real usage counts (a key request / keys attached to a player); merely probing which key systems the

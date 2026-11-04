@@ -275,11 +275,54 @@ const addLinkToTab = (tabId, rawUrl, referer, poster, isMobile = false, size = 0
   updateBadge(tabId);
 };
 
+// Whole-URL patterns for the mobile page's HTML (same media types and signatures as inject.js). videoRegex /
+// videoQueryRegex above only test a URL that is already known; on raw HTML they return fragments such as ".mp4?".
+const htmlMediaUrlRegex = /https?:\/\/[^\s"'<>\\]+?\.(?:m3u8|mpd|m3u|mp4|webm|mkv|mov|avi|flv|m4v|ogv|wmv|3gp|f4v|mp3|aac|flac|wav|ogg|opus|m4a|vtt|srt|ttml|dfxp)(?=[?#"'<>\s\\]|$)[^\s"'<>\\]*/gi;
+const htmlSignatureUrlRegex = /https?:\/\/[^\s"'<>\\]+(?:mime=video|mime=audio|mime=text%2Fvtt|format=m3u8|format=mpd|format=hls|format=dash|format=vtt|format=srt|type=m3u8|type=mpd|type=hls|type=dash|type=vtt|type=srt|output=m3u8|stream_type=hls|stream_type=dash|protocol=hls|\/videoplayback\?|\/(?:manifest|playlist|master)\.(?:m3u8|mpd)|\/hls\/|\/dash\/|\/api\/timedtext\?|\/timedtext\?)[^\s"'<>\\]*/gi;
+
+// fetch() cannot set User-Agent or Sec-CH-UA-* (Chrome drops them silently), so the probe request gets them from a
+// short-lived session rule that only matches this worker's own requests to the page's site.
+const MOBILE_UA_RULE_BASE = 1200;
+let mobileUaRuleSeq = 0;
+const withMobileUA = async (pageUrl, fn) => {
+  const dnr = chrome.declarativeNetRequest;
+  let host = '';
+  try { host = new URL(pageUrl).hostname.replace(/^(?:www|m|mobile)\./i, ''); } catch (e) {}
+  if (!dnr || !dnr.updateSessionRules || !host) return fn();
+  const id = MOBILE_UA_RULE_BASE + (mobileUaRuleSeq++ % 50);
+  const ua = { header: 'User-Agent', operation: 'set', value: MOBILE_UA };
+  const hints = [
+    { header: 'Sec-CH-UA-Mobile', operation: 'set', value: '?1' },
+    { header: 'Sec-CH-UA-Platform', operation: 'set', value: '"iOS"' },
+    { header: 'Sec-CH-UA', operation: 'remove' }
+  ];
+  const rule = (requestHeaders) => ({
+    id: id,
+    priority: 5,
+    action: { type: 'modifyHeaders', requestHeaders: requestHeaders },
+    condition: { requestDomains: [host], initiatorDomains: [chrome.runtime.id], tabIds: [chrome.tabs.TAB_ID_NONE], resourceTypes: ['xmlhttprequest'] }
+  });
+  let added = false;
+  for (const headers of [[ua, ...hints], [ua]]) { // fall back to the User-Agent alone if a hint header is refused
+    try {
+      await dnr.updateSessionRules({ removeRuleIds: [id], addRules: [rule(headers)] });
+      added = true;
+      break;
+    } catch (e) {}
+  }
+  try {
+    return await fn();
+  } finally {
+    if (added) dnr.updateSessionRules({ removeRuleIds: [id] }).catch(() => {});
+  }
+};
+
 // Isolated Mobile User-Agent Probe: Scans page as Mobile Safari for direct MP4 fallbacks
 const scanPageWithMobileUA = async (tabId, pageUrl) => {
   if (tabId < 0 || !pageUrl || !pageUrl.startsWith('http')) return [];
   try {
-    const response = await fetch(pageUrl, {
+    const target = pageUrl.split('#')[0];
+    const response = await withMobileUA(target, () => fetch(target, {
       method: 'GET',
       headers: {
         'User-Agent': MOBILE_UA,
@@ -288,20 +331,27 @@ const scanPageWithMobileUA = async (tabId, pageUrl) => {
         'Sec-CH-UA-Platform': '"iOS"'
       },
       credentials: 'omit'
-    });
-    const html = await response.text();
-    if (!html) return [];
+    }));
+    const raw = await response.text();
+    if (!raw) return [];
+    // URLs inside inline JSON / attributes: undo the usual escaping so whole URLs can be matched
+    const html = raw.replace(/\\u0026/gi, '&').replace(/\\u002f/gi, '/').replace(/\\\//g, '/').replace(/&amp;/g, '&');
+    const baseUrl = response.url || target;
 
     const found = [];
-    const matches1 = html.match(videoRegex) || [];
-    const matches2 = html.match(videoQueryRegex) || [];
-    found.push(...matches1, ...matches2);
+    found.push(...(html.match(htmlMediaUrlRegex) || []), ...(html.match(htmlSignatureUrlRegex) || []));
+    if (typeof drm.findDrmUrls === 'function') found.push(...drm.findDrmUrls(html));
 
     // Also scan standard media tags: <video src="...">, <source src="...">, <meta property="og:video">
     const tagSrcRegex = /<(?:video|source|track|meta)[^>]+(?:src|content)=["'](https?:\/\/[^"'>]+)["']/gi;
     let match;
     while ((match = tagSrcRegex.exec(html)) !== null) {
       if (match[1]) found.push(match[1]);
+    }
+    // Media tags with a relative src ("/media/clip.mp4")
+    const relSrcRegex = /<(?:video|audio|source|track)\b[^>]*?\ssrc\s*=\s*["']([^"']+)["']/gi;
+    while ((match = relSrcRegex.exec(html)) !== null) {
+      try { if (match[1]) found.push(new URL(match[1], baseUrl).toString()); } catch (e) {}
     }
 
     const added = [];
@@ -475,7 +525,13 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   }
 });
 
-// Set dynamic declarativeNetRequest rule for in-popup video/image preview with custom referer and CORS headers
+// Earlier versions stored the preview rules as persistent dynamic rules that also applied to every tab.
+// Remove any left over; they are now session rules (see setPreviewRefererRule).
+if (chrome.declarativeNetRequest && chrome.declarativeNetRequest.updateDynamicRules) {
+  chrome.declarativeNetRequest.updateDynamicRules({ removeRuleIds: [1001, 1002] }).catch(() => {});
+}
+
+// Set session declarativeNetRequest rules for in-popup video/image preview with custom referer and CORS headers
 const setPreviewRefererRule = async (mediaUrl, refererUrl) => {
   if (!chrome.declarativeNetRequest) return;
   if (!mediaUrl || typeof mediaUrl !== 'string' || mediaUrl.startsWith('blob:') || mediaUrl.startsWith('data:')) return;
@@ -509,6 +565,8 @@ const setPreviewRefererRule = async (mediaUrl, refererUrl) => {
     ];
 
     const extId = (chrome.runtime && chrome.runtime.id) ? chrome.runtime.id : '';
+    // Session rules (gone on browser restart). Rule 1002 only matches requests made outside any tab (the popup
+    // player, this worker), so the Referer / CORS headers never leak into the pages you browse.
     const rules = [
       {
         id: 1001,
@@ -534,12 +592,13 @@ const setPreviewRefererRule = async (mediaUrl, refererUrl) => {
         },
         condition: {
           urlFilter: `||${parsedMedia.hostname}`,
+          tabIds: [chrome.tabs.TAB_ID_NONE],
           resourceTypes: ['media', 'image', 'xmlhttprequest', 'sub_frame', 'other', 'script']
         }
       }
     ];
 
-    await chrome.declarativeNetRequest.updateDynamicRules({
+    await chrome.declarativeNetRequest.updateSessionRules({
       removeRuleIds: [1001, 1002],
       addRules: rules
     });
@@ -1085,6 +1144,74 @@ const probeLinkDrm = async (tabId, rawUrl) => {
   }
 };
 
+// ---- Save button downloads ---------------------------------------------------------------------
+// chrome.downloads cannot set Referer / Origin itself, and hotlink-protected hosts answer 403 without them.
+// A session rule adds them to requests made outside any tab (where downloads run) to that one host.
+const DOWNLOAD_RULE_BASE = 1100;
+let downloadRuleSeq = 0;
+const downloadRules = new Map(); // downloadId -> session rule id
+
+const releaseDownloadRule = (downloadId) => {
+  const id = downloadRules.get(downloadId);
+  if (!id) return;
+  downloadRules.delete(downloadId);
+  chrome.declarativeNetRequest.updateSessionRules({ removeRuleIds: [id] }).catch(() => {});
+};
+
+if (chrome.downloads && chrome.downloads.onChanged) {
+  chrome.downloads.onChanged.addListener((delta) => {
+    if (delta && delta.state && delta.state.current === 'complete') releaseDownloadRule(delta.id);
+  });
+}
+
+const downloadWithReferer = async (url, filename, referer) => {
+  const dnr = chrome.declarativeNetRequest;
+  let host = '';
+  let origin = '';
+  try { host = new URL(url).hostname; } catch (e) {}
+  try { origin = new URL(referer).origin; } catch (e) {}
+  let ruleId = 0;
+  if (dnr && dnr.updateSessionRules && host && origin && /^https?:/i.test(origin)) {
+    ruleId = DOWNLOAD_RULE_BASE + (downloadRuleSeq++ % 90);
+    try {
+      await dnr.updateSessionRules({
+        removeRuleIds: [ruleId],
+        addRules: [{
+          id: ruleId,
+          priority: 4,
+          action: {
+            type: 'modifyHeaders',
+            requestHeaders: [
+              { header: 'Referer', operation: 'set', value: referer },
+              { header: 'Origin', operation: 'set', value: origin }
+            ]
+          },
+          condition: { requestDomains: [host], tabIds: [chrome.tabs.TAB_ID_NONE], resourceTypes: ['other', 'media', 'xmlhttprequest'] }
+        }]
+      });
+    } catch (e) {
+      ruleId = 0;
+    }
+  }
+  return new Promise((resolve) => {
+    const options = { url: url, saveAs: false };
+    // chrome.downloads rejects names with path separators / characters Windows does not allow (e.g. from a
+    // percent-decoded URL path); replace only those so the download does not fail
+    const safeName = String(filename || '').replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_').replace(/^[\s.]+|[\s.]+$/g, '');
+    if (safeName) options.filename = safeName;
+    chrome.downloads.download(options, (downloadId) => {
+      const err = chrome.runtime.lastError;
+      if (err || !downloadId) {
+        if (ruleId) dnr.updateSessionRules({ removeRuleIds: [ruleId] }).catch(() => {});
+        resolve({ ok: false, error: err ? err.message : 'download failed' });
+        return;
+      }
+      if (ruleId) downloadRules.set(downloadId, ruleId);
+      resolve({ ok: true, downloadId: downloadId });
+    });
+  });
+};
+
 // MESSAGE HANDLING
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   // From popup: get links + referers + posters + sizes
@@ -1176,6 +1303,17 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       chrome.storage.local.set({ mobileScanMode: mobileScanMode });
     }
     sendResponse({ success: true, mode: mobileScanMode });
+  }
+  // From popup: Save button (download with the stream's Referer)
+  else if (request.action === 'downloadMedia') {
+    if (!chrome.downloads || !request.url) {
+      sendResponse({ ok: false });
+      return false;
+    }
+    downloadWithReferer(request.url, request.filename || '', request.referer || '')
+      .then((result) => sendResponse(result))
+      .catch(() => sendResponse({ ok: false }));
+    return true;
   }
   // From popup: enable preview referer and CORS rules
   else if (request.action === 'preparePreview') {
