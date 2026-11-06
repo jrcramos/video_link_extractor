@@ -1180,7 +1180,8 @@ const withProbeReferer = async (url, referer, fn) => {
   }
 };
 
-// First bytes of a URL (or the whole manifest, capped). null on network / HTTP failure.
+// First bytes of a URL (or the whole manifest, capped) and the URL it came from after redirects.
+// null on network / HTTP failure.
 const probeFetch = async (url, referer) => {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), DRM_PROBE_TIMEOUT_MS);
@@ -1194,7 +1195,7 @@ const probeFetch = async (url, referer) => {
         signal: ctrl.signal
       });
       if (!res.ok && res.status !== 206) return null;
-      return await readProbeBody(res);
+      return { bytes: await readProbeBody(res), url: res.url || url };
     });
   } catch (e) {
     return null;
@@ -1203,27 +1204,33 @@ const probeFetch = async (url, referer) => {
   }
 };
 
-// -> { ok: false } on failure, else { ok: true, info } (info null = looked, found no encryption)
+// -> { ok: false } on failure, else { ok: true, info, variants } (info null = looked, found no encryption;
+// variants = the qualities a master playlist / MPD lists, or null)
 const probeUrlForDrm = async (url, referer, hop) => {
-  const bytes = await probeFetch(url, referer);
-  if (!bytes) return { ok: false };
+  const got = await probeFetch(url, referer);
+  if (!got) return { ok: false };
+  const bytes = got.bytes;
   if (looksTextual(bytes)) {
     let text = '';
     try { text = new TextDecoder().decode(bytes); } catch (e) {}
+    const variants = hop === 0 && typeof drm.parseVariants === 'function' ? drm.parseVariants(text, got.url) : null;
     const info = drm.analyzeManifest(text);
-    if (info || hop >= 1) return { ok: true, info: info };
+    if (info || hop >= 1) return { ok: true, info: info, variants: variants };
     // HLS master playlists keep their keys in the media playlists: follow one hop
     const next = drm.firstPlaylistUri(text);
     if (next) {
       try {
-        const follow = await probeUrlForDrm(new URL(next, url).toString(), referer, hop + 1);
-        if (follow.ok) return follow;
+        const follow = await probeUrlForDrm(new URL(next, got.url).toString(), referer, hop + 1);
+        if (follow.ok) return { ok: true, info: follow.info, variants: variants };
       } catch (e) {}
     }
-    return { ok: true, info: null };
+    return { ok: true, info: null, variants: variants };
   }
-  return { ok: true, info: drm.analyzeMp4Head(bytes) };
+  return { ok: true, info: drm.analyzeMp4Head(bytes), variants: null };
 };
+
+// A manifest by its URL: worth reading for the qualities it lists even when its DRM status is already known
+const MANIFEST_URL_RE = /\.(?:m3u8|m3u|mpd)(?:[?#]|$)|[?&](?:format|type|output)=(?:m3u8|mpd|hls|dash)\b/i;
 
 const probeLinkDrm = async (tabId, rawUrl) => {
   await getTabLinks(tabId);
@@ -1231,22 +1238,26 @@ const probeLinkDrm = async (tabId, rawUrl) => {
   const tabMap = videoLinks.get(tabId);
   const entry = url && tabMap && tabMap.get(drm.keyFor(url));
   if (!entry) return { checked: false };
-  if (entry.drmChecked) return { checked: true, drm: entry.drm || null };
+  const done = () => entry.drmChecked && (entry.variantsChecked || entry.segmented || !MANIFEST_URL_RE.test(entry.url));
+  const answer = (checked) => ({ checked: checked, drm: entry.drm || null, variants: entry.variants || null, variantsChecked: !!entry.variantsChecked });
+  if (done()) return answer(true);
   if (DRM_PROBE_SKIP.test(entry.url)) {
     entry.drmChecked = true;
-    return { checked: true, drm: entry.drm || null };
+    return answer(true);
   }
-  if ((entry.drmProbeAttempts || 0) >= DRM_PROBE_MAX_ATTEMPTS) return { checked: false, drm: entry.drm || null };
+  if ((entry.drmProbeAttempts || 0) >= DRM_PROBE_MAX_ATTEMPTS) return answer(false);
 
   await acquireProbeSlot();
   try {
-    if (entry.drmChecked) return { checked: true, drm: entry.drm || null };
+    if (done()) return answer(true);
     const result = await probeUrlForDrm(entry.url, entry.referer || tabPageUrls.get(tabId) || '', 0);
     if (!result.ok) {
       entry.drmProbeAttempts = (entry.drmProbeAttempts || 0) + 1;
       saveTabLinksDebounced(tabId);
-      return { checked: false, drm: entry.drm || null };
+      return answer(false);
     }
+    entry.variantsChecked = true;
+    if (result.variants) entry.variants = result.variants;
     entry.drmChecked = true;
     if (result.info) {
       entry.drm = drm.mergeInfo(entry.drm, result.info);
@@ -1262,7 +1273,7 @@ const probeLinkDrm = async (tabId, rawUrl) => {
       }
     }
     saveTabLinksDebounced(tabId);
-    return { checked: true, drm: entry.drm || null };
+    return answer(true);
   } finally {
     releaseProbeSlot();
   }

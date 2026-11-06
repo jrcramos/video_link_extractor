@@ -279,6 +279,127 @@
     return null;
   }
 
+  // ------------------------------------------------------------------ qualities inside a manifest
+  // HLS master playlist / DASH MPD -> { type: 'hls'|'dash', items: [{ kind, url, width, height, bandwidth, fps,
+  // codecs, name, language }] }. HLS items carry the URL of their own playlist (resolved against baseUrl); DASH
+  // representations have no URL of their own. null for media playlists and anything else.
+  const MAX_VARIANTS = 40;
+  const fpsOf = (v) => {
+    const s = String(v || '');
+    const frac = /^(\d+)\/(\d+)$/.exec(s);
+    const n = frac ? Number(frac[1]) / Number(frac[2]) : parseFloat(s);
+    return Number.isFinite(n) && n > 0 && n < 1000 ? Math.round(n * 100) / 100 : 0;
+  };
+  const numOf = (v) => {
+    const n = Number(v);
+    return Number.isFinite(n) && n > 0 ? Math.round(n) : 0;
+  };
+
+  function hlsVariants(text, baseUrl) {
+    const resolve = (u) => {
+      try {
+        const abs = new URL(u, baseUrl || undefined).toString();
+        return /^https?:\/\//i.test(abs) ? abs.slice(0, 2000) : '';
+      } catch (e) {
+        return '';
+      }
+    };
+    const lines = text.split(/\r?\n/);
+    const items = [];
+    for (let i = 0; i < lines.length && items.length < MAX_VARIANTS; i++) {
+      const line = lines[i].trim();
+      if (line.startsWith('#EXT-X-STREAM-INF:')) {
+        const a = hlsKeyAttrs(line.slice(18));
+        let uri = '';
+        for (let j = i + 1; j < lines.length; j++) {
+          const next = lines[j].trim();
+          if (!next) continue;
+          if (next.startsWith('#EXT-X-STREAM-INF')) break;
+          if (next.startsWith('#')) continue;
+          uri = next;
+          break;
+        }
+        const res = /^(\d+)x(\d+)$/i.exec(a.RESOLUTION || '');
+        const codecs = String(a.CODECS || '').slice(0, 60);
+        const audioOnly = !res && codecs && !/avc|hvc|hev|vp0?[89]|av01|dvh/i.test(codecs);
+        items.push({
+          kind: audioOnly ? 'audio' : 'video',
+          url: resolve(uri),
+          width: res ? numOf(res[1]) : 0,
+          height: res ? numOf(res[2]) : 0,
+          bandwidth: numOf(a['AVERAGE-BANDWIDTH']) || numOf(a.BANDWIDTH),
+          fps: fpsOf(a['FRAME-RATE']),
+          codecs: codecs,
+          name: '',
+          language: ''
+        });
+      } else if (line.startsWith('#EXT-X-MEDIA:')) {
+        const a = hlsKeyAttrs(line.slice(13));
+        const type = String(a.TYPE || '').toUpperCase();
+        if ((type === 'AUDIO' || type === 'SUBTITLES') && a.URI) {
+          items.push({
+            kind: type === 'AUDIO' ? 'audio' : 'subtitle',
+            url: resolve(a.URI),
+            width: 0, height: 0, bandwidth: 0, fps: 0, codecs: '',
+            name: String(a.NAME || '').slice(0, 80),
+            language: String(a.LANGUAGE || '').slice(0, 20)
+          });
+        }
+      }
+    }
+    const seen = new Set();
+    const unique = items.filter((it) => {
+      if (!it.url) return false;
+      const key = `${it.kind}|${it.url}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+    return unique.some((it) => it.kind === 'video' || it.kind === 'audio') ? { type: 'hls', items: unique } : null;
+  }
+
+  function dashVariants(text) {
+    const items = [];
+    // tolerates a manifest cut short (only its first bytes were read): the last set may have no closing tag
+    const setRe = /<(?:[\w-]+:)?AdaptationSet\b([^>]*)>([\s\S]*?)(?:<\/(?:[\w-]+:)?AdaptationSet>|$)/gi;
+    let m;
+    while ((m = setRe.exec(text)) !== null && items.length < MAX_VARIANTS) {
+      const setAttrs = m[1];
+      const setType = (attrOf(setAttrs, 'contentType') || attrOf(setAttrs, 'mimeType') || '').toLowerCase();
+      const lang = (attrOf(setAttrs, 'lang') || '').slice(0, 20);
+      const repRe = /<(?:[\w-]+:)?Representation\b([^>]*)>/gi;
+      let r;
+      while ((r = repRe.exec(m[2])) !== null && items.length < MAX_VARIANTS) {
+        const ra = r[1];
+        const type = (attrOf(ra, 'mimeType') || setType).toLowerCase();
+        if (type.includes('image')) continue; // thumbnail tracks
+        const kind = type.includes('audio') ? 'audio' : (type.includes('text') || type.includes('ttml') || type.includes('vtt') ? 'subtitle' : 'video');
+        items.push({
+          kind: kind,
+          url: '',
+          width: numOf(attrOf(ra, 'width') || attrOf(setAttrs, 'width')),
+          height: numOf(attrOf(ra, 'height') || attrOf(setAttrs, 'height')),
+          bandwidth: numOf(attrOf(ra, 'bandwidth')),
+          fps: fpsOf(attrOf(ra, 'frameRate') || attrOf(setAttrs, 'frameRate')),
+          codecs: (attrOf(ra, 'codecs') || attrOf(setAttrs, 'codecs') || '').slice(0, 60),
+          name: '',
+          language: lang
+        });
+      }
+    }
+    return items.some((it) => it.kind === 'video' || it.kind === 'audio') ? { type: 'dash', items: items } : null;
+  }
+
+  function parseVariants(text, baseUrl) {
+    try {
+      if (typeof text !== 'string' || text.length < 8) return null;
+      const head = text.slice(0, 8192);
+      if (head.includes('#EXTM3U')) return text.includes('#EXT-X-STREAM-INF') ? hlsVariants(text, baseUrl) : null;
+      if (head.includes('<MPD')) return dashVariants(text);
+    } catch (e) { /* not a manifest we can read */ }
+    return null;
+  }
+
   // HLS master playlists list their keys in the media playlists: URI of the first variant / rendition to follow
   function firstPlaylistUri(text) {
     if (typeof text !== 'string' || !text.includes('#EXT-X-STREAM-INF')) {
@@ -470,7 +591,9 @@
       mayContainDrmUrl, findDrmUrls, info, isDrmUrl, keyFor, segmentInfo, parseSegmentManifest, genericSegment, isInitLike,
       // generic evidence
       systemName, systemFromKeySystem, parsePssh, initDataInfo, analyzeMp4Head, analyzeManifest, firstPlaylistUri,
-      isLicenseRequest, stripQuery, mergeInfo
+      isLicenseRequest, stripQuery, mergeInfo,
+      // qualities listed in a manifest
+      parseVariants
     }),
     enumerable: false,
     configurable: false

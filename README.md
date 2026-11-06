@@ -23,6 +23,20 @@ A powerful browser extension for **Chromium-based browsers** (Chrome, Edge, Brav
 - When the tab moves to another page (a link, the address bar, or an in-page route change; not a `#hash` change), the list starts over for that page.
 - The lists of the last 3 pages are kept, so going **Back** (or opening that page again in the tab) brings its list back. **Clear** empties the tab, including those.
 - The list survives Chrome stopping the extension's background worker when idle.
+- **Live**: while the popup is open, new links appear as they are found and the popup follows the tab to its next page. Cards already shown stay where they are, so a running ▶ Play preview keeps playing.
+
+### 📶 Qualities Inside HLS / DASH Streams
+- The one-time manifest check (see DRM below) also reads the qualities a master `.m3u8` or an `.mpd` lists. The card shows the best one (`1080p`) and sorts by it, and a playlist the player loaded on its own gets its resolution too.
+- **📶 N tracks** opens one row per quality, audio and subtitle track (`1080p · 30 fps · 4.5 Mb/s`, `Audio · English`, ...). For HLS, each row has **Copy**, **+ Ref** and **+ Name** for that quality's own playlist, in the same formats as the card buttons, using the card's Referer and name. DASH tracks have no URL of their own, so they are listed only.
+
+### ⏳ Expiry of Signed Links
+- Links that carry an expiry time (`expire=`, `Expires=`, `exp=` as in Akamai tokens, S3 `X-Amz-Date` + `X-Amz-Expires`) show the time left: `⏳ 5 h left`, yellow under an hour, `⌛ Expired` after. Links valid for more than 30 days show nothing.
+
+### 🏷️ A Name per Video
+- **+ Name**, **⬇ Save** and the card title use the name the page gives that particular video, when it gives one:
+  - structured data (JSON-LD `VideoObject`, ...) naming that exact file, on any page;
+  - on pages with several differently named videos: the video's `title` / `aria-label` / `data-title`, its `<figure>` caption, or the text of a link to the file (noise such as "Download", "MP4" or "720p" is dropped).
+- Otherwise the name is the page's, worked out as before (structured data, `og:title`, the tab title without the site name, else the file name in the URL). On a page with one video, the page name wins over that video's label.
 
 ### 📦 Batch Export Suite
 - **yt-dlp Batch (`.txt`)**: A URL list for `yt-dlp -a batch.txt`, with each stream's Referer noted as a `# Referer:` comment above it (yt-dlp reads every other line of a batch file as a URL, so headers cannot go in the file; use the per-card **yt-dlp** button for a full command with headers).
@@ -54,7 +68,7 @@ Encrypted streams are listed like any other stream and labelled, so you can tell
 - Plain HLS `AES-128` (key served openly, downloadable with yt-dlp/ffmpeg) is labelled `🔑 AES-128`, **not** DRM.
 - The **🔒 DRM** filter pill lists only streams confirmed as DRM-protected. JSON export includes the details; the yt-dlp batch export adds a `#` comment above DRM entries.
 - Manifests the page downloads are analysed passively. For the rest, the popup asks the background worker to **check each listed link once**: it reads the manifest (or the first 64 KB of the file) with the page's own Referer, then stores the result. This only touches URLs the page already requested and only when you open the popup.
-- Some streams only expose a URL once playback starts: press play, then reopen the popup.
+- Some streams only expose a URL once playback starts: press play, and they appear in the open popup.
 
 ### 🧩 Segmented streams (any site)
 
@@ -112,7 +126,7 @@ The popup's ▶ Play engine is the bundled `hls.min.js` (currently **hls.js 1.7.
 | **▶ Play** / **⏹ Stop** | Preview live HLS stream or video file right in the popup |
 | **⬇ Save** | 1-Click direct browser download |
 | **+ Ref** | Copies `URL\|Referer` (ideal for custom batch scripts) |
-| **+ Name** | Copies `URL\|Referer\|Name`. The name comes from the page (structured data, `og:title`, or the tab title without the site name), else the file name in the URL |
+| **+ Name** | Copies `URL\|Referer\|Name`. The name is the one the page gives that video (see *A Name per Video*), else the page's (structured data, `og:title`, or the tab title without the site name), else the file name in the URL |
 | **yt-dlp** | Copies complete `yt-dlp --add-header ... "URL"` command |
 | **Copy** | Copies raw media URL |
 

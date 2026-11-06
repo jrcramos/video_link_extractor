@@ -52,6 +52,18 @@ document.addEventListener('DOMContentLoaded', () => {
   let currentTabDrm = null; // page-level DRM evidence from the background worker (EME usage, DRM manifests, ...)
   const drmProbed = new Set(); // link URLs already checked for DRM during this popup session
   const segmentedByUrl = new Map(); // entry url -> segmented-stream description (see background applySegmentedSignal)
+  const itemByUrl = new Map(); // entry url -> its latest data (buttons read it when clicked, so live updates count)
+  const variantsByUrl = new Map(); // master playlist / MPD url -> { type, items }: the qualities it lists
+  const variantOf = new Map(); // a quality's own playlist url -> { variant, masterUrl }
+  const cardRefs = new Map(); // entry url -> { card, refresh(item), destroy() } for the cards on screen
+  const expandedVariants = new Set(); // cards whose quality list is open
+  const probedSizes = new Map(); // url -> size from the HEAD probe (0 = unknown), so each link is probed once
+  let cardSeq = 0;
+  let currentSiteName = '';
+  // Names the page gives particular videos (structured data, element labels, captions, link text), by URL
+  let pageMediaNames = { exact: new Map(), byPath: new Map() };
+  let topMediaNames = [];
+  let frameMediaNames = [];
 
   // Theme Management
   function initTheme() {
@@ -120,6 +132,7 @@ document.addEventListener('DOMContentLoaded', () => {
       return item.size;
     }
     const url = typeof item === 'string' ? item : (item ? item.url : '');
+    if (probedSizes.get(url) > 0) return probedSizes.get(url);
     if (!url || !url.startsWith('http')) return 0;
     try {
       const parsed = new URL(url);
@@ -198,6 +211,10 @@ document.addEventListener('DOMContentLoaded', () => {
       const h = seg.height || 0;
       return { label: h ? `${h}p` : 'Video', tagClass: h >= 2160 ? 'quality-tag quality-4k' : (h >= 1080 ? 'quality-tag quality-1080p' : (h >= 720 ? 'quality-tag quality-720p' : 'quality-tag')), score: h || 100 };
     }
+    // Qualities read from the manifest itself: a master playlist / MPD shows its best one, a quality's own
+    // playlist shows its resolution
+    const fromManifest = qualityFromVariants(url);
+    if (fromManifest) return fromManifest;
     try {
       const parsed = new URL(url);
       const itag = parsed.searchParams.get('itag');
@@ -243,6 +260,103 @@ document.addEventListener('DOMContentLoaded', () => {
     return { label: typeInfo.label, tagClass: 'quality-tag', score: 100 };
   }
 
+  // ---- Add-on: qualities listed in HLS / DASH manifests ----------------------------------------
+  const heightClass = (h) => (h >= 2160 ? 'quality-tag quality-4k' : (h >= 1080 ? 'quality-tag quality-1080p' : (h >= 720 ? 'quality-tag quality-720p' : 'quality-tag')));
+  const heightLabel = (v) => `${v.height}p${v.fps >= 50 ? Math.round(v.fps) : ''}`;
+
+  function bestVideoVariant(items) {
+    return (items || []).filter((v) => v && v.kind === 'video' && v.height > 0)
+      .sort((a, b) => (b.height - a.height) || (b.bandwidth - a.bandwidth))[0] || null;
+  }
+
+  function qualityFromVariants(url) {
+    const listed = variantsByUrl.get(url);
+    if (listed) {
+      const best = bestVideoVariant(listed.items);
+      return best ? { label: heightLabel(best), tagClass: heightClass(best.height), score: best.height } : null;
+    }
+    const own = variantOf.get(url);
+    if (own && own.variant.kind === 'video' && own.variant.height > 0) {
+      return { label: heightLabel(own.variant), tagClass: heightClass(own.variant.height), score: own.variant.height };
+    }
+    return null;
+  }
+
+  // The manifest of a link was read: remember its qualities, and which playlist URL belongs to which master
+  function registerVariants(item) {
+    if (!item || !item.variants || !Array.isArray(item.variants.items)) return;
+    variantsByUrl.set(item.url, item.variants);
+    item.variants.items.forEach((v) => {
+      const own = v && v.url ? (normalizeUrl(v.url) || v.url) : '';
+      if (own && !variantOf.has(own)) variantOf.set(own, { variant: v, masterUrl: item.url });
+    });
+  }
+
+  function formatBitrate(bps) {
+    if (!bps || bps <= 0) return '';
+    return bps >= 1000000 ? `${(bps / 1000000).toFixed(1)} Mb/s` : `${Math.round(bps / 1000)} kb/s`;
+  }
+
+  // "1080p · 30 fps · 4.5 Mb/s", "Audio · English · 128 kb/s", "Subtitles · Deutsch"
+  function variantLabel(v) {
+    let parts;
+    if (v.kind === 'audio') parts = ['Audio', v.name || v.language, formatBitrate(v.bandwidth)];
+    else if (v.kind === 'subtitle') parts = ['Subtitles', v.name || v.language];
+    else parts = [v.height ? `${v.height}p` : (v.width ? `${v.width} wide` : 'Video'), v.fps ? `${Math.round(v.fps * 100) / 100} fps` : '', formatBitrate(v.bandwidth)];
+    return parts.filter(Boolean).join(' · ');
+  }
+
+  // Videos first (best first), then audio, then subtitles
+  function sortedVariants(items) {
+    const rank = { video: 0, audio: 1, subtitle: 2 };
+    return (items || []).slice().sort((a, b) => (rank[a.kind] - rank[b.kind]) || (b.height - a.height) || (b.bandwidth - a.bandwidth));
+  }
+
+  // ---- Add-on: expiry of signed links ------------------------------------------------------------
+  // When a signed link stops working, from the expiry most CDNs put in the URL: expire= / Expires= / exp= (also
+  // inside Akamai-style tokens "exp=...~acl=...", in the query or the path) as Unix time, or S3's
+  // X-Amz-Date + X-Amz-Expires. 0 when the URL carries none.
+  function getExpiry(url) {
+    let text = '';
+    try {
+      const u = new URL(url);
+      text = u.pathname + u.search;
+      try { text = decodeURIComponent(text); } catch (e) {}
+    } catch (e) {
+      return 0;
+    }
+    const amzDate = /[?&]x-amz-date=(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z/i.exec(text);
+    const amzExpires = /[?&]x-amz-expires=(\d{1,7})(?!\d)/i.exec(text);
+    if (amzDate && amzExpires) {
+      return Date.UTC(+amzDate[1], +amzDate[2] - 1, +amzDate[3], +amzDate[4], +amzDate[5], +amzDate[6]) + Number(amzExpires[1]) * 1000;
+    }
+    const m = /(?:^|[/?&~=;,_-])(?:expires?|exp|expiry|expiration|expires_at|validto)=(\d{10}|\d{13})(?!\d)/i.exec(text);
+    if (!m) return 0;
+    const ms = m[1].length === 13 ? Number(m[1]) : Number(m[1]) * 1000;
+    return ms > Date.UTC(2015, 0, 1) && ms < Date.UTC(2100, 0, 1) ? ms : 0;
+  }
+
+  function formatTimeLeft(ms) {
+    const min = Math.round(ms / 60000);
+    if (min < 60) return `${Math.max(1, min)} min`;
+    const h = Math.round(ms / 3600000);
+    if (h < 48) return `${h} h`;
+    return `${Math.round(ms / 86400000)} d`;
+  }
+
+  // "⏳ 5 h left" (yellow under an hour), "⌛ Expired"; nothing for links valid for more than 30 days
+  function buildExpiryBadge(url) {
+    const at = getExpiry(url);
+    if (!at) return null;
+    const left = at - Date.now();
+    if (left > 30 * 86400000) return null;
+    const el = document.createElement('span');
+    el.className = `type-tag tag-expiry${left <= 0 ? ' tag-expired' : (left < 3600000 ? ' tag-expiring' : '')}`;
+    el.textContent = left <= 0 ? '⌛ Expired' : `⏳ ${formatTimeLeft(left)} left`;
+    el.title = `Signed link: ${left <= 0 ? 'expired' : 'expires'} ${new Date(at).toLocaleString()}. After that the server refuses it, so download it before then, or reload the page for a fresh link.`;
+    return el;
+  }
+
   // Helper to categorize media type & identify category key
   function getMediaType(url) {
     // Add-on: DRM-protected files (e.g. Spotify's encrypted podcast audio) have no recognizable extension
@@ -275,23 +389,58 @@ document.addEventListener('DOMContentLoaded', () => {
     return { category: 'video', label: 'Video', tagClass: 'tag-video', isVideo: true, icon: '🎥' };
   }
 
-  // Runs inside the page (top frame): best guess at the video's real name from page metadata
+  // Runs inside the page (top frame, and embedded frames): best guess at the video's real name from page metadata,
+  // plus the names the page gives particular videos ({ url, name, strong }: strong = structured data naming that
+  // exact file; the rest are element labels, captions and link text)
   function readPageVideoName() {
     const clean = (s) => (typeof s === 'string' ? s.replace(/\s+/g, ' ').trim() : '');
     const meta = (sel) => { const el = document.querySelector(sel); return el ? clean(el.getAttribute('content')) : ''; };
+    const mediaNames = [];
+    const addName = (rawUrl, name, strong) => {
+      const n = clean(name);
+      if (!n || typeof rawUrl !== 'string' || !rawUrl || mediaNames.length >= 300) return;
+      try {
+        const u = new URL(rawUrl, location.href);
+        if (u.protocol === 'http:' || u.protocol === 'https:') mediaNames.push({ url: u.href, name: n.slice(0, 200), strong: !!strong });
+      } catch (e) {}
+    };
 
     // 1. JSON-LD structured data (VideoObject, Episode, Movie, ...)
     const mediaTypes = /^(VideoObject|Movie|TVEpisode|Episode|PodcastEpisode|Clip|AudioObject|MusicRecording)$/;
     let ldName = '';
     const walk = (node) => {
-      if (ldName || !node || typeof node !== 'object') return;
+      if (!node || typeof node !== 'object') return;
       if (Array.isArray(node)) { node.forEach(walk); return; }
       const types = [].concat(node['@type'] || []);
-      if (types.some(t => mediaTypes.test(t)) && clean(node.name)) { ldName = clean(node.name); return; }
+      if (types.some(t => mediaTypes.test(t)) && clean(node.name)) {
+        if (!ldName) ldName = clean(node.name); // the page's name: the first one, as before
+        [].concat(node.contentUrl || [], node.embedUrl || []).forEach((u) => addName(typeof u === 'string' ? u : (u && u['@id']), node.name, true));
+      }
       Object.values(node).forEach(walk);
     };
     document.querySelectorAll('script[type="application/ld+json"]').forEach(s => {
       try { walk(JSON.parse(s.textContent)); } catch (e) {}
+    });
+
+    // 2. <video> / <audio> with a label of their own, or a <figure> caption
+    document.querySelectorAll('video, audio').forEach((el) => {
+      const fig = el.closest('figure');
+      const cap = fig ? fig.querySelector('figcaption') : null;
+      const names = [el.getAttribute('title'), el.getAttribute('aria-label'), el.getAttribute('data-title'), el.getAttribute('data-video-title'), el.getAttribute('data-name'), cap ? cap.textContent : ''];
+      const urls = [el.currentSrc, el.getAttribute('src')];
+      el.querySelectorAll('source[src]').forEach((s) => urls.push(s.getAttribute('src')));
+      names.forEach((n) => urls.forEach((u) => addName(u, n, false)));
+    });
+
+    // 3. Links straight to a media file: their download name, title, text, or the alt text of their image
+    document.querySelectorAll('a[href]').forEach((a) => {
+      const href = a.getAttribute('href') || '';
+      let path = '';
+      try { path = new URL(href, location.href).pathname; } catch (e) { return; }
+      if (!/\.(?:mp4|webm|mkv|mov|m4v|mp3|m4a|aac|flac|wav|ogg|opus|m3u8|mpd)$/i.test(path)) return;
+      const img = a.querySelector('img[alt]');
+      [(a.getAttribute('download') || '').replace(/\.[a-z0-9]{2,5}$/i, ''), a.getAttribute('title'), a.textContent, img ? img.getAttribute('alt') : '']
+        .forEach((n) => addName(href, n, false));
     });
 
     const siteName = meta('meta[property="og:site_name"]');
@@ -307,7 +456,73 @@ document.addEventListener('DOMContentLoaded', () => {
     let name = candidates.find(Boolean) || '';
     // "Clip Name : Free Download, ..." -> the page heading, when the title merely starts with it
     if (!ldName && h1 && h1.length >= 3 && name.length > h1.length && name.toLowerCase().startsWith(h1.toLowerCase())) name = h1;
-    return { name, siteName };
+    return { name, siteName, mediaNames };
+  }
+
+  // A per-video name without the noise around it: "Download Episode 5 (720p)" -> "Episode 5", "clip_01.mp4" ->
+  // "clip_01". '' when nothing but noise is left ("Video", "Download MP4", "Video player", "1080p").
+  const MEDIA_NAME_NOISE = /\b(?:download|watch|play|stream|open|view|save|now|free|here|click|link|file|files|video|videos|audio|clip|media|player|embedded|untitled|format|quality|hd|sd|uhd|fhd|full\s?hd|high|low|mp4|webm|mkv|mov|m4v|mp3|m4a|flac|wav|ogg|opus|m3u8|\d{3,4}p\d{0,2}|[248]k|\d+(?:\.\d+)?\s?(?:kbps|mbps|kb|mb|gb))\b/gi;
+  const TRAILING_NAME_NOISE = /(?:^|[\s([{|·,:–—-]+)(?:\d{3,4}p\d{0,2}|[248]k|hd|sd|uhd|fhd|full\s?hd|mp4|webm|mkv|mov|mp3|m4a|\d+(?:\.\d+)?\s?(?:kbps|mbps|kb|mb|gb))[\s)\]}]*$/i;
+  function cleanMediaName(raw) {
+    let n = String(raw || '').replace(/\s+/g, ' ').trim();
+    n = n.replace(/\.(?:mp4|webm|mkv|mov|m4v|mp3|m4a|aac|flac|wav|ogg|opus|m3u8|mpd)$/i, '');
+    n = n.replace(/^(?:download|watch|play|stream|open|view|save)\b[\s:–—-]*/i, '');
+    for (let i = 0; i < 5 && TRAILING_NAME_NOISE.test(n); i++) n = n.replace(TRAILING_NAME_NOISE, '').trim();
+    const meaningful = n.replace(MEDIA_NAME_NOISE, '').replace(/[^\p{L}]+/gu, '');
+    return meaningful.length >= 2 ? n.slice(0, 150) : '';
+  }
+
+  // Per-video names by URL. Structured data that names an exact file always counts. Labels, captions and link
+  // text only count when the page names several videos differently (a gallery, a list of episodes): on a page
+  // with one video, its page name stays the better name.
+  function buildMediaNames(lists) {
+    const entries = [];
+    lists.forEach((list) => (list || []).forEach((e) => { if (e && e.url && e.name) entries.push(e); }));
+    const nameOf = (e) => tidyTitle(cleanMediaName(e.name), currentSiteName);
+    const distinct = new Set(entries.map((e) => nameOf(e).toLowerCase()).filter(Boolean));
+    const useLabels = distinct.size >= 2;
+    const exact = new Map();
+    const byPath = new Map();
+    const conflicts = new Set();
+    entries.forEach((e) => {
+      if (!e.strong && !useLabels) return;
+      const name = nameOf(e);
+      const norm = name && normalizeUrl(e.url);
+      if (!norm) return;
+      if (!exact.has(norm) || (e.strong && !exact.get(norm).strong)) exact.set(norm, { name, strong: !!e.strong });
+      // the same file under another token / query: only for paths that name a media file
+      try {
+        const p = new URL(norm);
+        if (!/\.[a-z0-9]{2,5}$/i.test(p.pathname)) return;
+        const key = p.origin + p.pathname;
+        if (byPath.has(key) && byPath.get(key) !== name) conflicts.add(key);
+        else byPath.set(key, name);
+      } catch (e2) {}
+    });
+    conflicts.forEach((k) => byPath.delete(k));
+    const names = new Map();
+    exact.forEach((v, k) => names.set(k, v.name));
+    return { exact: names, byPath };
+  }
+
+  // The name the page gives this particular video ('' when it gives none). A quality listed in a master
+  // playlist takes the master's name.
+  function videoNameFor(url) {
+    const own = variantOf.get(url);
+    const key = own ? own.masterUrl : url;
+    const found = pageMediaNames.exact.get(key) || (key !== url ? pageMediaNames.exact.get(url) : '');
+    if (found) return found;
+    try {
+      const p = new URL(key);
+      return pageMediaNames.byPath.get(p.origin + p.pathname) || '';
+    } catch (e) {
+      return '';
+    }
+  }
+
+  // Title shown on a card: the video's own name, else the page's
+  function cardTitleFor(url) {
+    return videoNameFor(url) || currentVideoName || tidyTitle(currentPageTitle);
   }
 
   // Strip site suffixes / notification counters from a title: "(3) My Clip | SiteName" -> "My Clip"
@@ -326,8 +541,11 @@ document.addEventListener('DOMContentLoaded', () => {
     return (name || '').replace(/[/\\?%*:|"<>\u0000-\u001f]/g, '_').replace(/[\s.]+$/, '').trim().slice(0, 150);
   }
 
-  // Video name for a stream: page metadata, else tab title, else the file name in the URL
+  // Video name for a stream: the name the page gives this video, else page metadata, else tab title, else the
+  // file name in the URL
   function getVideoName(url) {
+    const own = toSafeName(videoNameFor(url));
+    if (own) return own;
     const fromPage = toSafeName(currentVideoName) || toSafeName(tidyTitle(currentPageTitle));
     if (fromPage) return fromPage;
     try {
@@ -358,8 +576,9 @@ document.addEventListener('DOMContentLoaded', () => {
   // Infer clean filename for downloads & exports with page title support
   function getCleanFilename(url, fallbackExt = 'mp4') {
     try {
-      if (currentVideoName || currentPageTitle) {
-        const sanitized = toSafeName(currentVideoName) || toSafeName(tidyTitle(currentPageTitle));
+      const ownName = videoNameFor(url);
+      if (ownName || currentVideoName || currentPageTitle) {
+        const sanitized = toSafeName(ownName) || toSafeName(currentVideoName) || toSafeName(tidyTitle(currentPageTitle));
         if (sanitized) {
           const qual = getStreamQuality(url);
           const qualSuffix = qual ? `_${qual.label.replace(/[^a-zA-Z0-9]/g, '')}` : '';
@@ -470,14 +689,6 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  // A probe finished for a link that is already on screen: patch its card in place (keeps running previews alive)
-  function refreshCardDrm(item) {
-    const card = Array.from(linksContainer.querySelectorAll('.link-card')).find((c) => c.dataset.url === item.url);
-    const tagRow = card && card.querySelector('.tag-row');
-    if (tagRow) appendDrmBadges(tagRow, item, getMediaType(item.url));
-    updateFilterCounts(currentLinks);
-  }
-
   // Page-level summary: the page is playing (or offering) DRM content, per the browser's own encrypted-media API
   function renderDrmBanner() {
     if (!drmBanner) return;
@@ -516,24 +727,37 @@ document.addEventListener('DOMContentLoaded', () => {
     drmBanner.style.display = 'flex';
   }
 
-  // Ask the background worker to check listed links for DRM (reads a manifest / the first 64 KB of a file).
-  // Results are stored per link, so each link is only ever checked once.
+  // Ask the background worker to check listed links for DRM (reads a manifest / the first 64 KB of a file), and
+  // manifests for the qualities they list. Results are stored per link, so each link is only ever checked once.
+  const MANIFEST_URL_RE = /\.(?:m3u8|m3u|mpd)(?:[?#]|$)|[?&](?:format|type|output)=(?:m3u8|mpd|hls|dash)\b/i;
+  const wantsVariants = (item) => !item.variantsChecked && !item.segmented && MANIFEST_URL_RE.test(item.url);
   function scheduleDrmProbes() {
     if (currentTabId === undefined) return;
     currentLinks.forEach((item) => {
       const url = item && item.url;
-      if (!url || item.drmChecked || drmProbed.has(url)) return;
+      if (!url || (item.drmChecked && !wantsVariants(item)) || drmProbed.has(url)) return;
       if (getMediaType(url).category === 'subtitle' || /\.(?:mp3|wav|aac|flac|ogg|opus)(?:[?#]|$)/i.test(url)) return;
       if (drmProbed.size >= 60) return;
       drmProbed.add(url);
       chrome.runtime.sendMessage({ action: 'probeDrm', tabId: currentTabId, url: url }, (res) => {
         if (chrome.runtime.lastError || !res) return;
-        const cur = currentLinks.find((i) => i.url === url);
+        const cur = itemByUrl.get(url);
         if (!cur) return;
         if (res.checked) cur.drmChecked = true;
+        if (res.variantsChecked) cur.variantsChecked = true;
+        let changed = false;
         if (res.drm) {
           cur.drm = res.drm;
-          refreshCardDrm(cur);
+          changed = true;
+        }
+        if (res.variants && Array.isArray(res.variants.items)) {
+          cur.variants = res.variants;
+          registerVariants(cur);
+          changed = true;
+        }
+        if (changed) {
+          refreshAllCards(); // a master's qualities also label the cards of its own quality playlists
+          updateFilterCounts(currentLinks);
         }
         if (res.drm && res.drm.type === 'drm') {
           // a confirmed DRM stream also means the page has DRM content: refresh the page-level banner
@@ -656,7 +880,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const q = searchQuery.toLowerCase();
         const matchesUrl = url.toLowerCase().includes(q);
         const matchesRef = referer.toLowerCase().includes(q);
-        const matchesTitle = currentPageTitle.toLowerCase().includes(q);
+        const matchesTitle = currentPageTitle.toLowerCase().includes(q) || cardTitleFor(url).toLowerCase().includes(q);
         if (!matchesUrl && !matchesRef && !matchesTitle) return false;
       }
 
@@ -729,32 +953,42 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  // Render list of links
-  function renderLinks(linksData, pageUrl) {
-    if (linksData !== undefined) {
-      // Strict canonical deduplication
-      const uniqueMap = new Map();
-      (linksData || []).forEach(item => {
-        const rawUrl = typeof item === 'string' ? item : (item ? item.url : '');
-        // a grouped stream may be addressed by a .ts / .m4s piece: those are only ever shown as that one group
-        const norm = (item && typeof item === 'object' && item.segmented) ? rawUrl : normalizeUrl(rawUrl);
-        if (norm && !uniqueMap.has(norm)) {
-          uniqueMap.set(norm, typeof item === 'string' ? { url: norm } : { ...item, url: norm });
-        }
-      });
-      currentLinks = Array.from(uniqueMap.values());
-      segmentedByUrl.clear();
-      currentLinks.forEach((item) => { if (item && item.segmented) segmentedByUrl.set(item.url, item.segmented); });
+  // Takes a list from the background worker: de-duplicates it, rebuilds the per-URL lookups and selects links
+  // seen for the first time (items the user unticked stay unticked)
+  function setLinks(linksData) {
+    // Strict canonical deduplication
+    const uniqueMap = new Map();
+    (linksData || []).forEach(item => {
+      const rawUrl = typeof item === 'string' ? item : (item ? item.url : '');
+      // a grouped stream may be addressed by a .ts / .m4s piece: those are only ever shown as that one group
+      const norm = (item && typeof item === 'object' && item.segmented) ? rawUrl : normalizeUrl(rawUrl);
+      if (norm && !uniqueMap.has(norm)) {
+        uniqueMap.set(norm, typeof item === 'string' ? { url: norm } : { ...item, url: norm });
+      }
+    });
+    currentLinks = Array.from(uniqueMap.values());
+    itemByUrl.clear();
+    segmentedByUrl.clear();
+    variantsByUrl.clear();
+    variantOf.clear();
+    currentLinks.forEach((item) => {
+      itemByUrl.set(item.url, item);
+      if (item.segmented) segmentedByUrl.set(item.url, item.segmented);
+      registerVariants(item);
+    });
 
-      // Select all by default on first load or when new items arrive; items the user unticked stay unticked
-      currentLinks.forEach(item => {
-        const u = typeof item === 'string' ? item : item.url;
-        if (!seenUrls.has(u)) {
-          seenUrls.add(u);
-          selectedUrls.add(u);
-        }
-      });
-    }
+    // Select all by default on first load or when new items arrive; items the user unticked stay unticked
+    currentLinks.forEach(item => {
+      if (!seenUrls.has(item.url)) {
+        seenUrls.add(item.url);
+        selectedUrls.add(item.url);
+      }
+    });
+  }
+
+  // Render list of links: the whole list (on open, and when the filter, search, sort or selection changes)
+  function renderLinks(linksData, pageUrl) {
+    if (linksData !== undefined) setLinks(linksData);
     if (pageUrl !== undefined) {
       currentPageUrl = pageUrl || '';
     }
@@ -766,6 +1000,7 @@ document.addEventListener('DOMContentLoaded', () => {
       try { hls.destroy(); } catch (e) {}
     });
     activeHlsPlayers.clear();
+    cardRefs.clear();
 
     updateFilterCounts(currentLinks);
     countBadge.textContent = currentLinks.length;
@@ -779,8 +1014,8 @@ document.addEventListener('DOMContentLoaded', () => {
         <div class="empty-state">
           <div class="empty-icon">🎬</div>
           <div><strong>No media streams detected yet.</strong></div>
-          <div style="font-size: 12px; margin-top: 6px; opacity: 0.85;">Play a video or use <strong>📱 Mobile Scan</strong> to check for direct streams.</div>
-          ${currentTabDrm ? '<div style="font-size: 12px; margin-top: 6px; opacity: 0.85;">🔒 This page uses DRM, but has not exposed a stream URL yet. Start playback and reopen this popup.</div>' : ''}
+          <div style="font-size: 12px; margin-top: 6px; opacity: 0.85;">Play a video or use <strong>📱 Mobile Scan</strong> to check for direct streams. Links appear here as they are found.</div>
+          ${currentTabDrm ? '<div style="font-size: 12px; margin-top: 6px; opacity: 0.85;">🔒 This page uses DRM, but has not exposed a stream URL yet. Start playback: its links appear here as they are found.</div>' : ''}
         </div>
       `;
       updateSelectionUI();
@@ -806,75 +1041,153 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
 
-    filtered.forEach((item, index) => {
-      const url = typeof item === 'string' ? item : item.url;
-      const referer = (typeof item === 'object' && item.referer) ? item.referer : currentPageUrl;
-      const poster = (typeof item === 'object' && item.poster) ? item.poster : '';
-      const isMobile = (typeof item === 'object' && item.isMobile);
-      const sizeBytes = getMediaSize(item);
-      const typeInfo = getMediaType(url);
-      const qualityInfo = getStreamQuality(url);
-      const isSelected = selectedUrls.has(url);
-      const cardId = `card_${index}_${Date.now()}`;
+    filtered.forEach((item) => linksContainer.appendChild(buildCard(item)));
 
-      const card = document.createElement('div');
-      card.className = `link-card ${isSelected ? 'is-selected' : 'not-selected'}`;
-      card.id = cardId;
-      card.dataset.url = url;
+    updateSelectionUI();
+    if (linksData !== undefined) scheduleDrmProbes();
+  }
 
-      // Card Header / Info
-      const cardTop = document.createElement('div');
-      cardTop.className = 'card-top';
+  // A newer list arrived while the popup is open: patch the cards on screen instead of rebuilding them, so a
+  // running ▶ Play preview, the scroll position and button feedback stay put. Cards already shown keep their
+  // place (moving a playing <video> pauses it); new ones go where the current sort order puts them.
+  function applyLiveLinks(linksData, pageUrl) {
+    const hadCards = cardRefs.size > 0;
+    setLinks(linksData);
+    if (pageUrl !== undefined) currentPageUrl = pageUrl || '';
+    const filtered = getFilteredLinks();
+    if (!hadCards || !filtered.length) {
+      renderLinks();
+      scheduleDrmProbes();
+      return;
+    }
+    renderDrmBanner();
+    updateFilterCounts(currentLinks);
+    countBadge.textContent = currentLinks.length;
 
-      // Selection Checkbox
-      const cardCheckbox = document.createElement('input');
-      cardCheckbox.type = 'checkbox';
-      cardCheckbox.className = 'card-checkbox';
-      cardCheckbox.checked = isSelected;
-      cardCheckbox.title = 'Select / Deselect this stream';
-
-      cardCheckbox.addEventListener('change', (e) => {
-        e.stopPropagation();
-        if (cardCheckbox.checked) {
-          selectedUrls.add(url);
-          card.classList.add('is-selected');
-          card.classList.remove('not-selected');
-        } else {
-          selectedUrls.delete(url);
-          card.classList.remove('is-selected');
-          card.classList.add('not-selected');
-        }
-        updateSelectionUI();
-      });
-
-      // Small inline thumbnail preview box
-      const thumbBox = document.createElement('div');
-      thumbBox.className = 'thumb-box';
-
-      if (poster) {
-        chrome.runtime.sendMessage({
-          action: 'preparePreview',
-          mediaUrl: poster,
-          refererUrl: referer
-        }, () => {
-          const img = document.createElement('img');
-          img.alt = 'Thumbnail';
-          img.src = poster;
-          img.onerror = () => {
-            img.remove();
-            thumbBox.innerHTML = `<span class="thumb-placeholder">${typeInfo.icon}</span>`;
-          };
-          thumbBox.appendChild(img);
-        });
-      } else {
-        thumbBox.innerHTML = `<span class="thumb-placeholder">${typeInfo.icon}</span>`;
+    const wanted = new Set(filtered.map((item) => item.url));
+    Array.from(cardRefs.entries()).forEach(([url, ref]) => {
+      if (wanted.has(url)) return;
+      ref.destroy();
+      ref.card.remove();
+      cardRefs.delete(url);
+    });
+    let next = null; // the card that follows, in sort order
+    for (let i = filtered.length - 1; i >= 0; i--) {
+      const item = filtered[i];
+      const ref = cardRefs.get(item.url);
+      if (ref && ref.refresh(item)) {
+        next = ref.card;
+        continue;
       }
+      // new, or its kind changed (e.g. it turned out to be a grouped stream): (re)built
+      if (ref) {
+        ref.destroy();
+        cardRefs.delete(item.url);
+      }
+      const card = buildCard(item);
+      if (ref) ref.card.replaceWith(card);
+      else linksContainer.insertBefore(card, next);
+      next = card;
+    }
+    updateSelectionUI();
+    scheduleDrmProbes();
+  }
 
-      const cardInfo = document.createElement('div');
-      cardInfo.className = 'card-info';
+  // Re-draws the parts of every card that can change (titles once the page names are read, expiry countdowns)
+  function refreshAllCards() {
+    cardRefs.forEach((ref, url) => ref.refresh(itemByUrl.get(url) || null));
+  }
 
-      const tagRow = document.createElement('div');
-      tagRow.className = 'tag-row';
+  // One card. Its buttons read the link's latest data when clicked; refresh() re-draws the parts that change.
+  function buildCard(initialItem) {
+    const url = initialItem.url;
+    const latest = () => itemByUrl.get(url) || initialItem;
+    const refererOf = () => { const cur = latest(); return (cur && cur.referer) ? cur.referer : currentPageUrl; };
+    const posterOf = () => { const cur = latest(); return (cur && cur.poster) ? cur.poster : ''; };
+    const typeInfo = getMediaType(url); // the kind of link is fixed for a card: when it changes, the card is rebuilt
+    const isSelected = selectedUrls.has(url);
+    const cardId = `card_${++cardSeq}`;
+
+    const card = document.createElement('div');
+    card.className = `link-card ${isSelected ? 'is-selected' : 'not-selected'}`;
+    card.id = cardId;
+    card.dataset.url = url;
+
+    // Card Header / Info
+    const cardTop = document.createElement('div');
+    cardTop.className = 'card-top';
+
+    // Selection Checkbox
+    const cardCheckbox = document.createElement('input');
+    cardCheckbox.type = 'checkbox';
+    cardCheckbox.className = 'card-checkbox';
+    cardCheckbox.checked = isSelected;
+    cardCheckbox.title = 'Select / Deselect this stream';
+
+    cardCheckbox.addEventListener('change', (e) => {
+      e.stopPropagation();
+      if (cardCheckbox.checked) {
+        selectedUrls.add(url);
+        card.classList.add('is-selected');
+        card.classList.remove('not-selected');
+      } else {
+        selectedUrls.delete(url);
+        card.classList.remove('is-selected');
+        card.classList.add('not-selected');
+      }
+      updateSelectionUI();
+    });
+
+    // Small inline thumbnail preview box
+    const thumbBox = document.createElement('div');
+    thumbBox.className = 'thumb-box';
+    let thumbShown = null; // poster URL on display ('' = placeholder)
+    const showThumb = () => {
+      const poster = posterOf();
+      if (thumbShown === poster || (thumbShown && !poster)) return;
+      thumbShown = poster;
+      if (!poster) {
+        thumbBox.innerHTML = `<span class="thumb-placeholder">${typeInfo.icon}</span>`;
+        return;
+      }
+      chrome.runtime.sendMessage({
+        action: 'preparePreview',
+        mediaUrl: poster,
+        refererUrl: refererOf()
+      }, () => {
+        const img = document.createElement('img');
+        img.alt = 'Thumbnail';
+        img.src = poster;
+        img.onerror = () => {
+          img.remove();
+          thumbBox.innerHTML = `<span class="thumb-placeholder">${typeInfo.icon}</span>`;
+        };
+        thumbBox.replaceChildren(img);
+      });
+    };
+
+    const cardInfo = document.createElement('div');
+    cardInfo.className = 'card-info';
+
+    // Title Display: the video's own name, else the page's
+    const titleEl = document.createElement('div');
+    titleEl.className = 'card-title';
+    const showTitle = () => {
+      const t = cardTitleFor(url);
+      titleEl.textContent = t;
+      titleEl.title = t;
+      titleEl.style.display = t ? '' : 'none';
+    };
+
+    const tagRow = document.createElement('div');
+    tagRow.className = 'tag-row';
+
+    const variantsBox = document.createElement('div');
+    variantsBox.className = 'variants-box';
+
+    const fillTags = () => {
+      const cur = latest();
+      tagRow.replaceChildren();
 
       const typeBadge = document.createElement('span');
       typeBadge.className = `type-tag ${typeInfo.tagClass}`;
@@ -882,7 +1195,7 @@ document.addEventListener('DOMContentLoaded', () => {
       tagRow.appendChild(typeBadge);
 
       // DRM / encryption badges (from manifest / file-header analysis, or the URL itself)
-      appendDrmBadges(tagRow, item, typeInfo);
+      appendDrmBadges(tagRow, cur, typeInfo);
 
       if (typeInfo.isSegmented) {
         const segMeta = segmentedByUrl.get(url);
@@ -896,6 +1209,7 @@ document.addEventListener('DOMContentLoaded', () => {
       }
 
       // Smart Quality/Resolution badge (show only if distinct from type badge)
+      const qualityInfo = getStreamQuality(url);
       if (qualityInfo && qualityInfo.label !== typeInfo.label && qualityInfo.label !== 'Video' && qualityInfo.label !== 'Audio' && qualityInfo.label !== 'Subtitle') {
         const qualityBadge = document.createElement('span');
         qualityBadge.className = qualityInfo.tagClass;
@@ -903,34 +1217,49 @@ document.addEventListener('DOMContentLoaded', () => {
         tagRow.appendChild(qualityBadge);
       }
 
+      // Qualities the manifest lists: opens the list with a copy row per quality
+      const variants = variantsByUrl.get(url);
+      if (variants && variants.items.length) {
+        const n = variants.items.length;
+        const open = expandedVariants.has(url);
+        const toggle = document.createElement('button');
+        toggle.type = 'button';
+        toggle.className = 'variants-toggle';
+        toggle.textContent = `📶 ${n} ${n === 1 ? 'track' : 'tracks'} ${open ? '▴' : '▾'}`;
+        toggle.title = variants.type === 'hls'
+          ? 'Qualities, audio and subtitle tracks in this playlist, each with its own link to copy'
+          : 'Qualities and tracks this DASH manifest lists';
+        toggle.addEventListener('click', () => {
+          if (expandedVariants.has(url)) expandedVariants.delete(url);
+          else expandedVariants.add(url);
+          fillTags();
+          showVariants();
+        });
+        tagRow.appendChild(toggle);
+      }
+
       // File Size Badge
+      const sizeBytes = getMediaSize(cur);
       if (sizeBytes > 0) {
         const sizeSpan = document.createElement('span');
         sizeSpan.className = 'size-badge';
         sizeSpan.textContent = `📦 ${formatFileSize(sizeBytes)}`;
         tagRow.appendChild(sizeSpan);
       } else if (!typeInfo.isStream && !typeInfo.isSegmented) {
-        // Probe size asynchronously in background for direct media files
-        const sizeSpan = document.createElement('span');
-        sizeSpan.className = 'size-badge';
-        chrome.runtime.sendMessage({ action: 'probeMediaSize', mediaUrl: url }, (res) => {
-          if (res && res.size > 0) {
-            item.size = res.size;
-            sizeSpan.textContent = `📦 ${formatFileSize(res.size)}`;
-            if (!sizeSpan.parentNode) {
-              tagRow.appendChild(sizeSpan);
-            }
-          }
-        });
+        requestMediaSize(url);
       }
 
-      if (isMobile) {
+      const expiry = buildExpiryBadge(url);
+      if (expiry) tagRow.appendChild(expiry);
+
+      if (cur && cur.isMobile) {
         const mobileBadge = document.createElement('span');
         mobileBadge.className = 'type-tag tag-mobile';
         mobileBadge.textContent = '📱 Mobile Direct';
         tagRow.appendChild(mobileBadge);
       }
 
+      const referer = refererOf();
       if (referer) {
         try {
           const refHost = new URL(referer).hostname;
@@ -941,362 +1270,511 @@ document.addEventListener('DOMContentLoaded', () => {
           tagRow.appendChild(refBadge);
         } catch (e) {}
       }
+    };
 
-      // Title Display
-      let cleanTitle = '';
-      if (currentVideoName || currentPageTitle) {
-        cleanTitle = currentVideoName || tidyTitle(currentPageTitle);
-        const titleEl = document.createElement('div');
-        titleEl.className = 'card-title';
-        titleEl.textContent = cleanTitle;
-        titleEl.title = cleanTitle;
-        cardInfo.appendChild(titleEl);
+    // One row per quality / track. HLS rows copy that quality's own playlist in the same formats as the card's
+    // buttons (URL, URL|Referer, URL|Referer|Name, with this card's Referer and name). DASH lists them only.
+    const copyButton = (label, title, text) => {
+      const btn = document.createElement('button');
+      btn.className = label === 'Copy' ? 'action-btn btn-copy' : 'action-btn btn-piped';
+      btn.textContent = label;
+      btn.title = title;
+      btn.addEventListener('click', () => {
+        navigator.clipboard.writeText(text()).then(() => triggerCopied(btn, label === 'Copy' ? '✓ URL' : '✓ Copied'));
+      });
+      return btn;
+    };
+    const showVariants = () => {
+      const variants = variantsByUrl.get(url);
+      if (!variants || !expandedVariants.has(url)) {
+        variantsBox.remove();
+        return;
       }
+      const rows = sortedVariants(variants.items).map((v) => {
+        const row = document.createElement('div');
+        row.className = 'variant-row';
+        const label = document.createElement('span');
+        label.className = 'variant-label';
+        label.textContent = variantLabel(v);
+        const metaEl = document.createElement('span');
+        metaEl.className = 'variant-meta';
+        metaEl.textContent = v.codecs || v.language || '';
+        metaEl.title = v.url || v.codecs || '';
+        row.append(label, metaEl);
+        if (v.url) {
+          row.append(
+            copyButton('Copy', 'Copy this quality\'s URL', () => v.url),
+            copyButton('+ Ref', 'Copy this quality\'s URL and Referer (URL|Ref)', () => { const r = refererOf(); return r ? `${v.url}|${r}` : v.url; }),
+            copyButton('+ Name', 'Copy this quality\'s URL, Referer and video name (URL|Ref|Name)', () => `${v.url}|${refererOf() || ''}|${getVideoName(url)}`)
+          );
+        }
+        return row;
+      });
+      variantsBox.replaceChildren(...rows);
+      if (!variantsBox.isConnected) actionsBar.before(variantsBox);
+    };
 
-      const urlLink = document.createElement('a');
-      urlLink.className = 'link-url';
-      urlLink.href = url;
-      urlLink.target = '_blank';
-      urlLink.title = url;
-      urlLink.textContent = url;
+    const urlLink = document.createElement('a');
+    urlLink.className = 'link-url';
+    urlLink.href = url;
+    urlLink.target = '_blank';
+    urlLink.title = url;
+    urlLink.textContent = url;
 
-      cardInfo.appendChild(tagRow);
-      cardInfo.appendChild(urlLink);
+    cardInfo.appendChild(titleEl);
+    cardInfo.appendChild(tagRow);
+    cardInfo.appendChild(urlLink);
 
-      // Card Actions
-      // 1. Video Preview Button
-      const previewBtn = document.createElement('button');
-      previewBtn.className = 'action-btn btn-preview';
-      previewBtn.innerHTML = '▶ Play';
-      previewBtn.title = 'Test play live stream / media in popup';
-      if (typeInfo.isSegmented) previewBtn.style.display = 'none'; // a single piece is not playable on its own
+    // Card Actions
+    // 1. Video Preview Button
+    const previewBtn = document.createElement('button');
+    previewBtn.className = 'action-btn btn-preview';
+    previewBtn.innerHTML = '▶ Play';
+    previewBtn.title = 'Test play live stream / media in popup';
+    if (typeInfo.isSegmented) previewBtn.style.display = 'none'; // a single piece is not playable on its own
 
-      // 2. Direct Download Button
-      const downloadBtn = document.createElement('button');
-      downloadBtn.className = 'action-btn btn-download';
-      downloadBtn.innerHTML = '⬇ Save';
-      downloadBtn.title = 'Download file directly to browser';
+    // 2. Direct Download Button
+    const downloadBtn = document.createElement('button');
+    downloadBtn.className = 'action-btn btn-download';
+    downloadBtn.innerHTML = '⬇ Save';
+    downloadBtn.title = 'Download file directly to browser';
 
+    if (typeInfo.isSegmented) {
+      downloadBtn.innerHTML = '⬇ .m3u8';
+      downloadBtn.title = 'Export an .m3u8 playlist with every segment of this stream (open it with ffmpeg / VLC / mpv)';
+    }
+
+    downloadBtn.addEventListener('click', () => {
       if (typeInfo.isSegmented) {
-        downloadBtn.innerHTML = '⬇ .m3u8';
-        downloadBtn.title = 'Export an .m3u8 playlist with every segment of this stream (open it with ffmpeg / VLC / mpv)';
+        const segMeta = segmentedByUrl.get(url);
+        if (!segMeta) { triggerCopied(downloadBtn, '⚠️ Manifest not captured'); return; }
+        const name = segmentPlaylistName(url);
+        downloadBlob(buildSegmentPlaylist(segMeta, name), name, 'application/vnd.apple.mpegurl');
+        triggerCopied(downloadBtn, '✓ Playlist');
+        return;
       }
+      const fallbackExt = typeInfo.ext || urlMediaExt(url) || (typeInfo.isSubtitle ? 'vtt' : (typeInfo.isAudio ? 'mp3' : (typeInfo.isHls ? 'm3u8' : 'mp4')));
+      const filename = getCleanFilename(url, fallbackExt);
 
-      downloadBtn.addEventListener('click', () => {
-        if (typeInfo.isSegmented) {
-          const segMeta = segmentedByUrl.get(url);
-          if (!segMeta) { triggerCopied(downloadBtn, '⚠️ Manifest not captured'); return; }
-          const name = segmentPlaylistName(url);
-          downloadBlob(buildSegmentPlaylist(segMeta, name), name, 'application/vnd.apple.mpegurl');
-          triggerCopied(downloadBtn, '✓ Playlist');
+      if (chrome.downloads && chrome.downloads.download) {
+        downloadBtn.textContent = '⏳ Saving...';
+        chrome.downloads.download({
+          url: url,
+          filename: filename,
+          saveAs: false
+        }, (downloadId) => {
+          if (chrome.runtime.lastError || !downloadId) {
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            a.target = '_blank';
+            a.click();
+            triggerCopied(downloadBtn, '✓ Saved');
+          } else {
+            triggerCopied(downloadBtn, '✓ Saved');
+          }
+        });
+      } else {
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        a.target = '_blank';
+        a.click();
+        triggerCopied(downloadBtn, '✓ Saved');
+      }
+    });
+
+    // 3. Mobile QR Code Button
+    const qrBtn = document.createElement('button');
+    qrBtn.className = 'action-btn btn-qr';
+    qrBtn.innerHTML = '📱 QR';
+    qrBtn.title = 'Show QR code to stream/open on mobile phone';
+
+    qrBtn.addEventListener('click', () => {
+      try {
+        if (!window.QRCode) {
+          console.error('QRCode generator script not loaded');
           return;
         }
-        const fallbackExt = typeInfo.ext || urlMediaExt(url) || (typeInfo.isSubtitle ? 'vtt' : (typeInfo.isAudio ? 'mp3' : (typeInfo.isHls ? 'm3u8' : 'mp4')));
-        const filename = getCleanFilename(url, fallbackExt);
-
-        if (chrome.downloads && chrome.downloads.download) {
-          downloadBtn.textContent = '⏳ Saving...';
-          chrome.downloads.download({
-            url: url,
-            filename: filename,
-            saveAs: false
-          }, (downloadId) => {
-            if (chrome.runtime.lastError || !downloadId) {
-              const a = document.createElement('a');
-              a.href = url;
-              a.download = filename;
-              a.target = '_blank';
-              a.click();
-              triggerCopied(downloadBtn, '✓ Saved');
-            } else {
-              triggerCopied(downloadBtn, '✓ Saved');
-            }
+        if (qrModalTitle) qrModalTitle.textContent = cardTitleFor(url) || 'Stream QR Code';
+        if (qrCanvasContainer) {
+          qrCanvasContainer.innerHTML = '';
+          new QRCode(qrCanvasContainer, {
+            text: url,
+            width: 180,
+            height: 180,
+            colorDark: '#0f172a',
+            colorLight: '#ffffff'
           });
-        } else {
-          const a = document.createElement('a');
-          a.href = url;
-          a.download = filename;
-          a.target = '_blank';
-          a.click();
-          triggerCopied(downloadBtn, '✓ Saved');
         }
-      });
-
-      // 3. Mobile QR Code Button
-      const qrBtn = document.createElement('button');
-      qrBtn.className = 'action-btn btn-qr';
-      qrBtn.innerHTML = '📱 QR';
-      qrBtn.title = 'Show QR code to stream/open on mobile phone';
-
-      qrBtn.addEventListener('click', () => {
-        try {
-          if (!window.QRCode) {
-            console.error('QRCode generator script not loaded');
-            return;
-          }
-          if (qrModalTitle) qrModalTitle.textContent = cleanTitle || 'Stream QR Code';
-          if (qrCanvasContainer) {
-            qrCanvasContainer.innerHTML = '';
-            new QRCode(qrCanvasContainer, {
-              text: url,
-              width: 180,
-              height: 180,
-              colorDark: '#0f172a',
-              colorLight: '#ffffff'
-            });
-          }
-          if (qrModal) qrModal.classList.add('show');
-        } catch (err) {
-          console.error('Failed to generate QR code:', err);
-        }
-      });
-
-      // 4. Copy Direct URL Button
-      const copyBtn = document.createElement('button');
-      copyBtn.className = 'action-btn btn-copy';
-      copyBtn.innerHTML = 'Copy';
-      copyBtn.title = 'Copy direct URL';
-
-      copyBtn.addEventListener('click', () => {
-        navigator.clipboard.writeText(url).then(() => {
-          triggerCopied(copyBtn, '✓ URL');
-        });
-      });
-
-      // 5. Copy Piped (URL|Referer) Button
-      const pipedBtn = document.createElement('button');
-      pipedBtn.className = 'action-btn btn-piped';
-      pipedBtn.innerHTML = '+ Ref';
-      pipedBtn.title = 'Copy URL and Referer (URL|Ref)';
-
-      pipedBtn.addEventListener('click', () => {
-        const payload = referer ? `${url}|${referer}` : url;
-        navigator.clipboard.writeText(payload).then(() => {
-          triggerCopied(pipedBtn, '✓ Copied');
-        });
-      });
-
-      // 5b. Copy URL|Referer|Name Button
-      const namedBtn = document.createElement('button');
-      namedBtn.className = 'action-btn btn-piped';
-      namedBtn.innerHTML = '+ Name';
-      namedBtn.title = 'Copy URL, Referer and video name (URL|Ref|Name)';
-
-      namedBtn.addEventListener('click', () => {
-        const payload = `${url}|${referer || ''}|${getVideoName(url)}`;
-        navigator.clipboard.writeText(payload).then(() => {
-          triggerCopied(namedBtn, '✓ Copied');
-        });
-      });
-
-      // 6. Copy yt-dlp Command Button
-      const ytdlpBtn = document.createElement('button');
-      ytdlpBtn.className = 'action-btn btn-ytdlp';
-      ytdlpBtn.innerHTML = 'yt-dlp';
-      ytdlpBtn.title = 'Copy yt-dlp command with headers';
-
-      if (typeInfo.isSegmented) {
-        ytdlpBtn.innerHTML = 'ffmpeg';
-        ytdlpBtn.title = 'Copy the ffmpeg command that assembles the exported .m3u8 into one file';
+        if (qrModal) qrModal.classList.add('show');
+      } catch (err) {
+        console.error('Failed to generate QR code:', err);
       }
+    });
 
-      ytdlpBtn.addEventListener('click', () => {
-        if (typeInfo.isSegmented) {
-          const segMeta = segmentedByUrl.get(url);
-          if (!segMeta) { triggerCopied(ytdlpBtn, '⚠️ Manifest not captured'); return; }
-          navigator.clipboard.writeText(ffmpegCommand(segmentPlaylistName(url), segMeta)).then(() => triggerCopied(ytdlpBtn, '✓ Cmd'));
-          return;
-        }
-        let cmd = `yt-dlp`;
-        if (referer) {
-          try {
-            const origin = new URL(referer).origin;
-            cmd += ` --add-header "Referer: ${shellSafeUrl(referer)}" --add-header "Origin: ${shellSafeUrl(origin)}"`;
-          } catch (e) {
-            cmd += ` --add-header "Referer: ${shellSafeUrl(referer)}"`;
-          }
-        }
-        cmd += ` "${shellSafeUrl(url)}"`;
+    // 4. Copy Direct URL Button
+    const copyBtn = document.createElement('button');
+    copyBtn.className = 'action-btn btn-copy';
+    copyBtn.innerHTML = 'Copy';
+    copyBtn.title = 'Copy direct URL';
 
-        navigator.clipboard.writeText(cmd).then(() => {
-          triggerCopied(ytdlpBtn, '✓ Cmd');
-        });
+    copyBtn.addEventListener('click', () => {
+      navigator.clipboard.writeText(url).then(() => {
+        triggerCopied(copyBtn, '✓ URL');
       });
+    });
 
-      let previewBox = null;
+    // 5. Copy Piped (URL|Referer) Button
+    const pipedBtn = document.createElement('button');
+    pipedBtn.className = 'action-btn btn-piped';
+    pipedBtn.innerHTML = '+ Ref';
+    pipedBtn.title = 'Copy URL and Referer (URL|Ref)';
 
-      // Video Preview Toggle Handler with Hls.js player engine
-      previewBtn.addEventListener('click', () => {
-        if (previewBox) {
-          if (activeHlsPlayers.has(cardId)) {
-            const hls = activeHlsPlayers.get(cardId);
-            try { hls.destroy(); } catch (e) {}
-            activeHlsPlayers.delete(cardId);
-          }
-          previewBox.remove();
-          previewBox = null;
-          previewBtn.innerHTML = '▶ Play';
-          previewBtn.classList.remove('active');
-        } else {
-          const startPlayback = () => {
-            previewBox = document.createElement('div');
-            previewBox.className = 'preview-player-box';
+    pipedBtn.addEventListener('click', () => {
+      const referer = refererOf();
+      const payload = referer ? `${url}|${referer}` : url;
+      navigator.clipboard.writeText(payload).then(() => {
+        triggerCopied(pipedBtn, '✓ Copied');
+      });
+    });
 
-            if (typeInfo.isAudio) {
-              const audioEl = document.createElement('audio');
-              audioEl.controls = true;
-              audioEl.autoplay = true;
-              audioEl.src = url;
-              previewBox.appendChild(audioEl);
+    // 5b. Copy URL|Referer|Name Button
+    const namedBtn = document.createElement('button');
+    namedBtn.className = 'action-btn btn-piped';
+    namedBtn.innerHTML = '+ Name';
+    namedBtn.title = 'Copy URL, Referer and video name (URL|Ref|Name)';
 
-              if (typeInfo.isDrm) {
-                audioEl.addEventListener('error', () => {
-                  const note = document.createElement('div');
-                  note.className = 'preview-note preview-note-error';
-                  note.style.color = '#fca5a5';
-                  note.innerHTML = `🔒 <strong>DRM-protected</strong>: the popup player can't decrypt this ${typeInfo.drmProvider} stream.<br>Play it in a DRM-capable player instead.`;
-                  if (!previewBox.querySelector('.preview-note-error')) {
-                    previewBox.appendChild(note);
-                  }
+    namedBtn.addEventListener('click', () => {
+      const referer = refererOf();
+      const payload = `${url}|${referer || ''}|${getVideoName(url)}`;
+      navigator.clipboard.writeText(payload).then(() => {
+        triggerCopied(namedBtn, '✓ Copied');
+      });
+    });
+
+    // 6. Copy yt-dlp Command Button
+    const ytdlpBtn = document.createElement('button');
+    ytdlpBtn.className = 'action-btn btn-ytdlp';
+    ytdlpBtn.innerHTML = 'yt-dlp';
+    ytdlpBtn.title = 'Copy yt-dlp command with headers';
+
+    if (typeInfo.isSegmented) {
+      ytdlpBtn.innerHTML = 'ffmpeg';
+      ytdlpBtn.title = 'Copy the ffmpeg command that assembles the exported .m3u8 into one file';
+    }
+
+    ytdlpBtn.addEventListener('click', () => {
+      if (typeInfo.isSegmented) {
+        const segMeta = segmentedByUrl.get(url);
+        if (!segMeta) { triggerCopied(ytdlpBtn, '⚠️ Manifest not captured'); return; }
+        navigator.clipboard.writeText(ffmpegCommand(segmentPlaylistName(url), segMeta)).then(() => triggerCopied(ytdlpBtn, '✓ Cmd'));
+        return;
+      }
+      const referer = refererOf();
+      let cmd = `yt-dlp`;
+      if (referer) {
+        try {
+          const origin = new URL(referer).origin;
+          cmd += ` --add-header "Referer: ${shellSafeUrl(referer)}" --add-header "Origin: ${shellSafeUrl(origin)}"`;
+        } catch (e) {
+          cmd += ` --add-header "Referer: ${shellSafeUrl(referer)}"`;
+        }
+      }
+      cmd += ` "${shellSafeUrl(url)}"`;
+
+      navigator.clipboard.writeText(cmd).then(() => {
+        triggerCopied(ytdlpBtn, '✓ Cmd');
+      });
+    });
+
+    let previewBox = null;
+
+    // Video Preview Toggle Handler with Hls.js player engine
+    previewBtn.addEventListener('click', () => {
+      if (previewBox) {
+        if (activeHlsPlayers.has(cardId)) {
+          const hls = activeHlsPlayers.get(cardId);
+          try { hls.destroy(); } catch (e) {}
+          activeHlsPlayers.delete(cardId);
+        }
+        previewBox.remove();
+        previewBox = null;
+        previewBtn.innerHTML = '▶ Play';
+        previewBtn.classList.remove('active');
+      } else {
+        const poster = posterOf();
+        const startPlayback = () => {
+          previewBox = document.createElement('div');
+          previewBox.className = 'preview-player-box';
+
+          if (typeInfo.isAudio) {
+            const audioEl = document.createElement('audio');
+            audioEl.controls = true;
+            audioEl.autoplay = true;
+            audioEl.src = url;
+            previewBox.appendChild(audioEl);
+
+            if (typeInfo.isDrm) {
+              audioEl.addEventListener('error', () => {
+                const note = document.createElement('div');
+                note.className = 'preview-note preview-note-error';
+                note.style.color = '#fca5a5';
+                note.innerHTML = `🔒 <strong>DRM-protected</strong>: the popup player can't decrypt this ${typeInfo.drmProvider} stream.<br>Play it in a DRM-capable player instead.`;
+                if (!previewBox.querySelector('.preview-note-error')) {
+                  previewBox.appendChild(note);
+                }
+              });
+            }
+          } else {
+            const videoEl = document.createElement('video');
+            videoEl.controls = true;
+            videoEl.playsInline = true;
+            if (poster) videoEl.poster = poster;
+
+            const attemptPlay = () => {
+              const p = videoEl.play();
+              if (p && typeof p.then === 'function') {
+                p.catch(() => {
+                  videoEl.muted = true;
+                  videoEl.play().catch(() => {});
                 });
               }
-            } else {
-              const videoEl = document.createElement('video');
-              videoEl.controls = true;
-              videoEl.playsInline = true;
-              if (poster) videoEl.poster = poster;
+            };
 
-              const attemptPlay = () => {
-                const p = videoEl.play();
-                if (p && typeof p.then === 'function') {
-                  p.catch(() => {
-                    videoEl.muted = true;
-                    videoEl.play().catch(() => {});
-                  });
-                }
-              };
+            const isHlsStream = url.includes('.m3u8') || url.includes('format=hls') || url.includes('format=m3u8') || url.includes('/hls/') || typeInfo.isHls;
 
-              const isHlsStream = url.includes('.m3u8') || url.includes('format=hls') || url.includes('format=m3u8') || url.includes('/hls/') || typeInfo.isHls;
-              
-              if (isHlsStream && window.Hls && Hls.isSupported()) {
-                const hls = new Hls({
-                  enableWorker: false,
-                  lowLatencyMode: false,
-                  backBufferLength: 90
-                });
-                activeHlsPlayers.set(cardId, hls);
+            if (isHlsStream && window.Hls && Hls.isSupported()) {
+              const hls = new Hls({
+                enableWorker: false,
+                lowLatencyMode: false,
+                backBufferLength: 90
+              });
+              activeHlsPlayers.set(cardId, hls);
 
-                hls.loadSource(url);
-                hls.attachMedia(videoEl);
-                hls.on(Hls.Events.MANIFEST_PARSED, () => {
-                  attemptPlay();
-                });
-                let networkRetryCount = 0;
-                hls.on(Hls.Events.ERROR, (event, data) => {
-                  console.warn('HLS stream event:', data);
-                  if (data.fatal) {
-                    switch (data.type) {
-                      case Hls.ErrorTypes.NETWORK_ERROR:
-                        networkRetryCount++;
-                        if (networkRetryCount <= 2) {
-                          console.warn(`HLS Network error (${data.details}), retrying (${networkRetryCount}/2)...`);
-                          hls.startLoad();
-                        } else {
-                          try { hls.destroy(); } catch (e) {}
-                          activeHlsPlayers.delete(cardId);
-                          const errBox = document.createElement('div');
-                          errBox.className = 'preview-note preview-note-error';
-                          errBox.style.color = '#fca5a5';
-                          errBox.innerHTML = `⚠️ <strong>Stream Playback Blocked</strong>: Server rejected browser popup connection (403/CORS).<br>Use <strong>[⬇ Save]</strong> to download directly, or copy with <strong>[+ Ref]</strong> / <strong>[yt-dlp]</strong>.`;
-                          if (!previewBox.querySelector('.preview-note-error')) {
-                            previewBox.appendChild(errBox);
-                          }
-                        }
-                        break;
-                      case Hls.ErrorTypes.MEDIA_ERROR:
-                        console.warn('HLS Media error, attempting recovery...');
-                        hls.recoverMediaError();
-                        break;
-                      default:
+              hls.loadSource(url);
+              hls.attachMedia(videoEl);
+              hls.on(Hls.Events.MANIFEST_PARSED, () => {
+                attemptPlay();
+              });
+              let networkRetryCount = 0;
+              hls.on(Hls.Events.ERROR, (event, data) => {
+                console.warn('HLS stream event:', data);
+                if (data.fatal) {
+                  switch (data.type) {
+                    case Hls.ErrorTypes.NETWORK_ERROR:
+                      networkRetryCount++;
+                      if (networkRetryCount <= 2) {
+                        console.warn(`HLS Network error (${data.details}), retrying (${networkRetryCount}/2)...`);
+                        hls.startLoad();
+                      } else {
                         try { hls.destroy(); } catch (e) {}
                         activeHlsPlayers.delete(cardId);
                         const errBox = document.createElement('div');
                         errBox.className = 'preview-note preview-note-error';
                         errBox.style.color = '#fca5a5';
-                        errBox.innerHTML = `⚠️ <strong>Stream Key Error</strong>: This stream uses protected session keys or tokens.<br>Use <strong>[⬇ Save]</strong> to download directly, or copy with <strong>[+ Ref]</strong> / <strong>[yt-dlp]</strong>.`;
+                        errBox.innerHTML = `⚠️ <strong>Stream Playback Blocked</strong>: Server rejected browser popup connection (403/CORS).<br>Use <strong>[⬇ Save]</strong> to download directly, or copy with <strong>[+ Ref]</strong> / <strong>[yt-dlp]</strong>.`;
                         if (!previewBox.querySelector('.preview-note-error')) {
                           previewBox.appendChild(errBox);
                         }
-                        break;
-                    }
+                      }
+                      break;
+                    case Hls.ErrorTypes.MEDIA_ERROR:
+                      console.warn('HLS Media error, attempting recovery...');
+                      hls.recoverMediaError();
+                      break;
+                    default:
+                      try { hls.destroy(); } catch (e) {}
+                      activeHlsPlayers.delete(cardId);
+                      const errBox = document.createElement('div');
+                      errBox.className = 'preview-note preview-note-error';
+                      errBox.style.color = '#fca5a5';
+                      errBox.innerHTML = `⚠️ <strong>Stream Key Error</strong>: This stream uses protected session keys or tokens.<br>Use <strong>[⬇ Save]</strong> to download directly, or copy with <strong>[+ Ref]</strong> / <strong>[yt-dlp]</strong>.`;
+                      if (!previewBox.querySelector('.preview-note-error')) {
+                        previewBox.appendChild(errBox);
+                      }
+                      break;
                   }
-                });
-              } else {
-                videoEl.src = url;
-                videoEl.addEventListener('canplay', () => {
-                  attemptPlay();
-                }, { once: true });
-                videoEl.addEventListener('error', (e) => {
-                  console.warn('Video element error:', e, videoEl.error);
-                  const errBox = document.createElement('div');
-                  errBox.className = 'preview-note preview-note-error';
-                  errBox.style.color = '#fca5a5';
-                  errBox.innerHTML = `⚠️ <strong>Media Error</strong>: Server rejected direct playback.<br>Use <strong>[⬇ Save]</strong> or copy with <strong>[+ Ref]</strong> / <strong>[yt-dlp]</strong>.`;
-                  if (!previewBox.querySelector('.preview-note-error')) {
-                    previewBox.appendChild(errBox);
-                  }
-                });
-              }
-
-              previewBox.appendChild(videoEl);
-
-              if (typeInfo.isDash) {
-                const note = document.createElement('div');
-                note.className = 'preview-note';
-                note.textContent = 'DASH Stream (.mpd): For best quality & multi-track audio, use [yt-dlp] or [⬇ Save].';
-                previewBox.appendChild(note);
-              }
+                }
+              });
+            } else {
+              videoEl.src = url;
+              videoEl.addEventListener('canplay', () => {
+                attemptPlay();
+              }, { once: true });
+              videoEl.addEventListener('error', (e) => {
+                console.warn('Video element error:', e, videoEl.error);
+                const errBox = document.createElement('div');
+                errBox.className = 'preview-note preview-note-error';
+                errBox.style.color = '#fca5a5';
+                errBox.innerHTML = `⚠️ <strong>Media Error</strong>: Server rejected direct playback.<br>Use <strong>[⬇ Save]</strong> or copy with <strong>[+ Ref]</strong> / <strong>[yt-dlp]</strong>.`;
+                if (!previewBox.querySelector('.preview-note-error')) {
+                  previewBox.appendChild(errBox);
+                }
+              });
             }
 
-            card.appendChild(previewBox);
-            previewBtn.innerHTML = '⏹ Stop';
-            previewBtn.classList.add('active');
-          };
+            previewBox.appendChild(videoEl);
 
-          chrome.runtime.sendMessage({
-            action: 'preparePreview',
-            mediaUrl: url,
-            refererUrl: referer
-          }, () => {
-            startPlayback();
-          });
-        }
-      });
+            if (typeInfo.isDash) {
+              const note = document.createElement('div');
+              note.className = 'preview-note';
+              note.textContent = 'DASH Stream (.mpd): For best quality & multi-track audio, use [yt-dlp] or [⬇ Save].';
+              previewBox.appendChild(note);
+            }
+          }
 
-      // 1. Top row: Checkbox + Thumbnail + Info
-      cardTop.appendChild(cardCheckbox);
-      cardTop.appendChild(thumbBox);
-      cardTop.appendChild(cardInfo);
-      card.appendChild(cardTop);
+          card.appendChild(previewBox);
+          previewBtn.innerHTML = '⏹ Stop';
+          previewBtn.classList.add('active');
+        };
 
-      // 2. Action bar: Play, Save, QR, Copy, +Ref, yt-dlp
-      const actionsBar = document.createElement('div');
-      actionsBar.className = 'card-actions-bar';
-      actionsBar.appendChild(previewBtn);
-      actionsBar.appendChild(downloadBtn);
-      actionsBar.appendChild(qrBtn);
-      actionsBar.appendChild(copyBtn);
-      actionsBar.appendChild(pipedBtn);
-      actionsBar.appendChild(namedBtn);
-      actionsBar.appendChild(ytdlpBtn);
-      card.appendChild(actionsBar);
-
-      linksContainer.appendChild(card);
+        chrome.runtime.sendMessage({
+          action: 'preparePreview',
+          mediaUrl: url,
+          refererUrl: refererOf()
+        }, () => {
+          startPlayback();
+        });
+      }
     });
 
-    updateSelectionUI();
-    if (linksData !== undefined) scheduleDrmProbes();
+    // 1. Top row: Checkbox + Thumbnail + Info
+    cardTop.appendChild(cardCheckbox);
+    cardTop.appendChild(thumbBox);
+    cardTop.appendChild(cardInfo);
+    card.appendChild(cardTop);
+
+    // 2. Action bar: Play, Save, QR, Copy, +Ref, +Name, yt-dlp
+    const actionsBar = document.createElement('div');
+    actionsBar.className = 'card-actions-bar';
+    actionsBar.appendChild(previewBtn);
+    actionsBar.appendChild(downloadBtn);
+    actionsBar.appendChild(qrBtn);
+    actionsBar.appendChild(copyBtn);
+    actionsBar.appendChild(pipedBtn);
+    actionsBar.appendChild(namedBtn);
+    actionsBar.appendChild(ytdlpBtn);
+    card.appendChild(actionsBar);
+
+    showThumb();
+    showTitle();
+    fillTags();
+    showVariants();
+
+    // false = the link changed kind (e.g. it is now a grouped stream) and the card must be rebuilt; a card with a
+    // running preview is only patched
+    const refresh = (item) => {
+      if (!item) return true;
+      const now = getMediaType(url);
+      if (!previewBox && (now.category !== typeInfo.category || !!now.isSegmented !== !!typeInfo.isSegmented)) return false;
+      showThumb();
+      showTitle();
+      fillTags();
+      showVariants();
+      return true;
+    };
+    const destroy = () => {
+      if (!activeHlsPlayers.has(cardId)) return;
+      try { activeHlsPlayers.get(cardId).destroy(); } catch (e) {}
+      activeHlsPlayers.delete(cardId);
+    };
+    cardRefs.set(url, { card, refresh, destroy });
+    return card;
   }
+
+  // File size of a direct media link from a HEAD request, once per link; its card is re-drawn when it is known
+  const sizeRequests = new Set();
+  function requestMediaSize(url) {
+    if (probedSizes.has(url) || sizeRequests.has(url)) return;
+    sizeRequests.add(url);
+    chrome.runtime.sendMessage({ action: 'probeMediaSize', mediaUrl: url }, (res) => {
+      sizeRequests.delete(url);
+      const size = (!chrome.runtime.lastError && res && res.size > 0) ? res.size : 0;
+      probedSizes.set(url, size);
+      const ref = cardRefs.get(url);
+      if (size > 0 && ref) ref.refresh(itemByUrl.get(url) || null);
+    });
+  }
+
+  // ---- Names the page gives its videos ----------------------------------------------------------
+  // Reads the page's name and its per-video names (top frame, as before), plus per-video names inside embedded
+  // frames. Fails silently on chrome:// and store pages.
+  function readNames() {
+    if (!chrome.scripting || currentTabId === undefined) return;
+    const tabId = currentTabId;
+    chrome.scripting.executeScript({ target: { tabId: tabId }, func: readPageVideoName }, (results) => {
+      if (chrome.runtime.lastError || !results || !results[0] || !results[0].result || tabId !== currentTabId) return;
+      const { name, siteName, mediaNames } = results[0].result;
+      currentSiteName = siteName || '';
+      currentVideoName = tidyTitle(name, siteName);
+      topMediaNames = Array.isArray(mediaNames) ? mediaNames : [];
+      pageMediaNames = buildMediaNames([topMediaNames, frameMediaNames]);
+      refreshAllCards();
+    });
+    chrome.scripting.executeScript({ target: { tabId: tabId, allFrames: true }, func: readPageVideoName }, (results) => {
+      if (chrome.runtime.lastError || !results || tabId !== currentTabId) return;
+      frameMediaNames = [];
+      results.forEach((r) => {
+        if (r && r.frameId !== 0 && r.result && Array.isArray(r.result.mediaNames)) frameMediaNames.push(...r.result.mediaNames);
+      });
+      pageMediaNames = buildMediaNames([topMediaNames, frameMediaNames]);
+      refreshAllCards();
+    });
+  }
+
+  let nameScanTimer = null;
+  function scheduleNameScan(delay = 600) {
+    clearTimeout(nameScanTimer);
+    nameScanTimer = setTimeout(readNames, delay);
+  }
+
+  // ---- Live list ---------------------------------------------------------------------------------
+  // The background worker saves a tab's list whenever it changes: while the popup is open, follow those saves
+  let liveTimer = null;
+  function scheduleLiveRefresh() {
+    if (liveTimer || currentTabId === undefined) return;
+    liveTimer = setTimeout(() => {
+      liveTimer = null;
+      const tabId = currentTabId;
+      chrome.runtime.sendMessage({ action: 'getLinks', tabId: tabId }, (res) => {
+        if (chrome.runtime.lastError || !res || tabId !== currentTabId) return;
+        const known = new Set(currentLinks.map((item) => item.url));
+        currentTabDrm = res.drm || null;
+        applyLiveLinks(res.links || [], res.pageUrl || currentPageUrl);
+        if (currentLinks.some((item) => !known.has(item.url))) scheduleNameScan(); // new videos may have names of their own
+      });
+    }, 400);
+  }
+
+  if (chrome.storage && chrome.storage.onChanged) {
+    chrome.storage.onChanged.addListener((changes) => {
+      if (currentTabId === undefined) return;
+      if (changes[`tab_videos_${currentTabId}`] || changes[`tab_drm_${currentTabId}`]) scheduleLiveRefresh();
+    });
+  }
+
+  // The tab moved to another page (or renamed itself) while the popup is open: follow it
+  chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+    if (tabId !== currentTabId) return;
+    if (changeInfo.url !== undefined) {
+      currentPageUrl = (tab && tab.url) || changeInfo.url || currentPageUrl;
+      currentVideoName = '';
+      topMediaNames = [];
+      frameMediaNames = [];
+      pageMediaNames = { exact: new Map(), byPath: new Map() };
+    }
+    if (changeInfo.title !== undefined) currentPageTitle = changeInfo.title || '';
+    if (changeInfo.url !== undefined || changeInfo.title !== undefined) {
+      refreshAllCards();
+      scheduleNameScan();
+      scheduleLiveRefresh();
+    }
+    if (changeInfo.status === 'complete') scheduleNameScan();
+  });
+
+  // Expiry countdowns move on while the popup stays open
+  setInterval(refreshAllCards, 60000);
 
   // Request links for active tab
   function requestLinks() {
@@ -1306,18 +1784,8 @@ document.addEventListener('DOMContentLoaded', () => {
       currentPageUrl = tabs[0].url || '';
       currentPageTitle = tabs[0].title || '';
 
-      // Read the video name from the page's metadata (fails silently on chrome:// and store pages)
-      if (chrome.scripting) {
-        chrome.scripting.executeScript({ target: { tabId: currentTabId }, func: readPageVideoName }, (results) => {
-          if (chrome.runtime.lastError || !results || !results[0] || !results[0].result) return;
-          const { name, siteName } = results[0].result;
-          currentVideoName = tidyTitle(name, siteName);
-          document.querySelectorAll('.card-title').forEach(el => {
-            el.textContent = currentVideoName;
-            el.title = currentVideoName;
-          });
-        });
-      }
+      // Read the video names from the page's metadata
+      scheduleNameScan(0);
 
       chrome.runtime.sendMessage({ action: 'getLinks', tabId: currentTabId }, (response) => {
         if (chrome.runtime.lastError) {
@@ -1337,7 +1805,7 @@ document.addEventListener('DOMContentLoaded', () => {
           chrome.runtime.sendMessage({ action: 'getLinks', tabId: currentTabId }, (res) => {
             if (res) {
               currentTabDrm = res.drm || null;
-              renderLinks(res.links || [], res.pageUrl || currentPageUrl);
+              applyLiveLinks(res.links || [], res.pageUrl || currentPageUrl);
             }
           });
         }
@@ -1510,7 +1978,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const typeInfo = getMediaType(url);
         const qualInfo = getStreamQuality(url);
         return {
-          title: currentVideoName || currentPageTitle,
+          title: videoNameFor(url) || currentVideoName || currentPageTitle,
           url,
           quality: qualInfo ? qualInfo.label : typeInfo.label,
           sizeBytes: sizeBytes,
