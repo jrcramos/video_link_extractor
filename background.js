@@ -133,6 +133,63 @@ const getContentLength = (headers) => {
   return length;
 };
 
+// Chrome stops this worker after ~30 s without events; the in-memory maps are then empty while storage still
+// holds each tab's list. A tab's stored list is merged back in (once per worker start) before anything is saved
+// for it, so a link found right after a restart cannot overwrite the links found before.
+const restoredTabs = new Set(); // tabIds whose stored list has been merged in, or that have nothing to restore
+const restoreJobs = new Map(); // tabId -> pending restore
+const tabGenerations = new Map(); // tabId -> counter, bumped whenever the tab's list is cleared
+
+// Stored entries into the in-memory map: missing links are added, links already found again keep their newer
+// data and take over what only the stored copy had (size, poster, DRM info, detection time, ...)
+const mergeStoredLinks = (tabMap, items) => {
+  (items || []).forEach((item) => {
+    if (!item || !item.url) return;
+    const norm = item.segmented ? item.url : normalizeUrl(item.url);
+    const key = norm && (item.groupKey || drm.keyFor(norm));
+    if (!norm) return;
+    const cur = tabMap.get(key);
+    if (!cur) {
+      tabMap.set(key, { ...item, url: norm });
+      return;
+    }
+    for (const [field, value] of Object.entries(item)) {
+      if (value && !cur[field]) cur[field] = value;
+    }
+    if (item.timestamp && (!cur.timestamp || item.timestamp < cur.timestamp)) cur.timestamp = item.timestamp;
+  });
+};
+
+const restoreTabLinks = (tabId) => {
+  if (tabId < 0 || !storage || restoredTabs.has(tabId)) return Promise.resolve();
+  if (restoreJobs.has(tabId)) return restoreJobs.get(tabId);
+  const generation = tabGenerations.get(tabId) || 0;
+  const key = `tab_videos_${tabId}`;
+  const job = storage.get([key]).then((res) => {
+    if ((tabGenerations.get(tabId) || 0) !== generation) return; // cleared meanwhile: the stored list is stale
+    const stored = res && Array.isArray(res[key]) ? res[key] : [];
+    if (!stored.length) return;
+    let tabMap = videoLinks.get(tabId);
+    if (!tabMap) {
+      tabMap = new Map();
+      videoLinks.set(tabId, tabMap);
+    }
+    mergeStoredLinks(tabMap, stored);
+    updateBadge(tabId);
+  }).catch(() => {}).then(() => {
+    restoreJobs.delete(tabId);
+    restoredTabs.add(tabId);
+  });
+  restoreJobs.set(tabId, job);
+  return job;
+};
+
+// The tab's list was just emptied: nothing stored may be merged back into it
+const markTabCleared = (tabId) => {
+  tabGenerations.set(tabId, (tabGenerations.get(tabId) || 0) + 1);
+  restoredTabs.add(tabId);
+};
+
 // Debounced save to storage to avoid concurrent write collisions
 const saveTabLinksDebounced = (tabId) => {
   if (tabId < 0 || !storage) return;
@@ -141,10 +198,12 @@ const saveTabLinksDebounced = (tabId) => {
   }
   const timer = setTimeout(() => {
     saveTimers.delete(tabId);
-    if (!videoLinks.has(tabId)) return;
-    const list = Array.from(videoLinks.get(tabId).values());
-    const key = `tab_videos_${tabId}`;
-    storage.set({ [key]: list }).catch(() => {});
+    restoreTabLinks(tabId).then(() => {
+      if (!videoLinks.has(tabId)) return;
+      const list = Array.from(videoLinks.get(tabId).values());
+      const key = `tab_videos_${tabId}`;
+      storage.set({ [key]: list }).catch(() => {});
+    });
   }, 100);
   saveTimers.set(tabId, timer);
 };
@@ -152,32 +211,8 @@ const saveTabLinksDebounced = (tabId) => {
 // Helper to retrieve tab links with storage fallback across service worker sleep
 const getTabLinks = async (tabId) => {
   if (tabId < 0) return [];
-  if (videoLinks.has(tabId) && videoLinks.get(tabId).size > 0) {
-    return Array.from(videoLinks.get(tabId).values());
-  }
-  if (!storage) return [];
-  try {
-    const key = `tab_videos_${tabId}`;
-    const res = await storage.get([key]);
-    if (res && Array.isArray(res[key])) {
-      let tabMap = videoLinks.get(tabId);
-      if (!tabMap) {
-        tabMap = new Map();
-        videoLinks.set(tabId, tabMap);
-      }
-      res[key].forEach(item => {
-        if (item && item.url) {
-          const norm = item.segmented ? item.url : normalizeUrl(item.url);
-          const key = norm && (item.groupKey || drm.keyFor(norm));
-          if (norm && !tabMap.has(key)) {
-            tabMap.set(key, { ...item, url: norm });
-          }
-        }
-      });
-      return Array.from(tabMap.values());
-    }
-  } catch (e) {}
-  return [];
+  await restoreTabLinks(tabId);
+  return videoLinks.has(tabId) ? Array.from(videoLinks.get(tabId).values()) : [];
 };
 
 // Update badge count on toolbar icon
@@ -217,6 +252,7 @@ const addLinkToTab = (tabId, rawUrl, referer, poster, isMobile = false, size = 0
   if (tabId < 0 || !rawUrl || typeof rawUrl !== 'string' || rawUrl.startsWith('blob:') || rawUrl.startsWith('data:')) return;
   const url = normalizeUrl(rawUrl);
   if (!url) return;
+  restoreTabLinks(tabId); // after a worker restart: bring back the links found before it
 
   // Add-on: numbered pieces of one stream (seg_1.mp4, seg_2.mp4, ...) collapse into a single entry
   if (groupGenericSegments(tabId, url, reqType, referer || tabPageUrls.get(tabId) || '')) return;
@@ -249,13 +285,15 @@ const addLinkToTab = (tabId, rawUrl, referer, poster, isMobile = false, size = 0
   
   // If exact canonical URL is already recorded, enhance metadata without duplicating
   if (existing) {
-    if (!existing.poster && poster) existing.poster = poster;
-    if (!existing.referer && referer) existing.referer = referer;
-    if (!existing.size && effectiveSize) existing.size = effectiveSize;
+    let changed = false;
+    if (!existing.poster && poster) { existing.poster = poster; changed = true; }
+    if (!existing.referer && referer) { existing.referer = referer; changed = true; }
+    if (!existing.size && effectiveSize) { existing.size = effectiveSize; changed = true; }
     if (segment && segment.isInit) {
       const current = drm.segmentInfo(existing.url);
-      if (!current || !current.isInit) existing.url = url;
+      if (!current || !current.isInit) { existing.url = url; changed = true; }
     }
+    if (changed) saveTabLinksDebounced(tabId); // keep it across a worker restart
     return;
   }
 
@@ -392,22 +430,103 @@ const scheduleMobileScan = (tabId, pageUrl) => {
   }
 };
 
+// ---- One list per page -------------------------------------------------------------------------
+// When the tab's page URL changes (a link, the address bar, or an in-page route change; not just the #hash),
+// the list starts again for the new page. The previous page's list is kept in a short per-tab history, so
+// going Back (or opening that page again in the tab) brings it back.
+// The page URL is tracked here from tabs.onUpdated (the page that is actually shown), not from main_frame
+// requests: those arrive before the new page replaces the old one, and may never replace it (downloads, 204s).
+const tabTopUrls = new Map(); // tabId -> URL of the page shown in the tab
+const tabHistory = new Map(); // tabId -> [{ page, links, drm }], most recent first
+const tabPageJobs = new Map(); // tabId -> queue, so page changes of one tab are handled in order
+const HISTORY_PAGES = 3;
+const pageKey = (u) => String(u || '').split('#')[0];
+
+const loadTabHistory = async (tabId) => {
+  if (tabHistory.has(tabId)) return tabHistory.get(tabId);
+  let list = [];
+  if (storage) {
+    try {
+      const key = `tab_hist_${tabId}`;
+      const res = await storage.get([key]);
+      if (res && Array.isArray(res[key])) list = res[key];
+    } catch (e) {}
+  }
+  if (!tabHistory.has(tabId)) tabHistory.set(tabId, list);
+  return tabHistory.get(tabId);
+};
+
+const saveTabHistory = (tabId) => {
+  if (!storage || !tabHistory.has(tabId)) return;
+  storage.set({ [`tab_hist_${tabId}`]: tabHistory.get(tabId) }).catch(() => {});
+};
+
+// The tab now shows newUrl instead of prevUrl. Links found before navTime belong to the previous page.
+const switchTabPage = async (tabId, prevUrl, newUrl, navTime) => {
+  await restoreTabLinks(tabId); // after a worker restart, the previous page's list may only be in storage
+  const prevDrm = await loadTabDrm(tabId);
+  const history = await loadTabHistory(tabId);
+
+  const tabMap = videoLinks.get(tabId) || new Map();
+  const oldLinks = [];
+  const nextMap = new Map();
+  for (const [key, entry] of tabMap) {
+    if ((entry.timestamp || 0) < navTime) oldLinks.push(entry);
+    else nextMap.set(key, entry); // already found on the new page
+  }
+
+  const oldPage = pageKey(prevUrl);
+  const newPage = pageKey(newUrl);
+  const kept = history.filter((h) => h && h.page !== oldPage && h.page !== newPage);
+  const comingBack = history.find((h) => h && h.page === newPage);
+  if (oldLinks.length || (prevDrm && prevDrm.active)) kept.unshift({ page: oldPage, links: oldLinks, drm: prevDrm || null });
+  tabHistory.set(tabId, kept.slice(0, HISTORY_PAGES));
+
+  markTabCleared(tabId);
+  videoLinks.set(tabId, nextMap);
+  tabFrameUrls.delete(tabId);
+  tabDrm.delete(tabId);
+  tabFamilies.delete(tabId);
+  tabInits.delete(tabId);
+  if (storage) storage.remove([`tab_drm_${tabId}`]).catch(() => {});
+
+  if (comingBack) {
+    mergeStoredLinks(nextMap, comingBack.links);
+    if (comingBack.drm) {
+      tabDrm.set(tabId, { ...newTabDrm(), ...comingBack.drm });
+      saveTabDrmDebounced(tabId);
+    }
+  }
+  saveTabLinksDebounced(tabId);
+  saveTabHistory(tabId);
+  updateBadge(tabId);
+};
+
+const onTabShown = (tabId, shownUrl, navTime) => {
+  const run = async () => {
+    let prevUrl = tabTopUrls.get(tabId);
+    if (prevUrl === undefined && storage) {
+      // the worker was restarted since this tab's last page change: its page URL is only in storage
+      try {
+        const key = `tab_page_${tabId}`;
+        const res = await storage.get([key]);
+        if (res && typeof res[key] === 'string') prevUrl = res[key];
+      } catch (e) {}
+    }
+    tabTopUrls.set(tabId, shownUrl);
+    if (prevUrl === shownUrl) return;
+    if (storage) storage.set({ [`tab_page_${tabId}`]: shownUrl }).catch(() => {});
+    if (prevUrl && pageKey(prevUrl) !== pageKey(shownUrl)) await switchTabPage(tabId, prevUrl, shownUrl, navTime);
+  };
+  const job = (tabPageJobs.get(tabId) || Promise.resolve()).then(run).catch(() => {});
+  tabPageJobs.set(tabId, job);
+  job.then(() => { if (tabPageJobs.get(tabId) === job) tabPageJobs.delete(tabId); });
+};
+
 // Track main frame & sub_frame navigation URLs
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (tab && tab.url && !tab.url.startsWith('chrome://')) {
-    const prevUrl = tabPageUrls.get(tabId);
-    if (changeInfo.url && prevUrl && changeInfo.url.split('#')[0] !== prevUrl.split('#')[0]) {
-      // Top level URL changed: clear old tab links
-      videoLinks.delete(tabId);
-      tabFrameUrls.delete(tabId);
-      tabDrm.delete(tabId);
-      tabFamilies.delete(tabId);
-      tabInits.delete(tabId);
-      if (storage) {
-        storage.remove([`tab_videos_${tabId}`, `tab_drm_${tabId}`]).catch(() => {});
-      }
-      updateBadge(tabId);
-    }
+    onTabShown(tabId, tab.url, Date.now());
     tabPageUrls.set(tabId, tab.url);
     if (changeInfo.status === 'complete') {
       scheduleMobileScan(tabId, tab.url);
@@ -502,8 +621,11 @@ chrome.webRequest.onHeadersReceived.addListener(
 
 // Clean up storage & memory on tab close
 chrome.tabs.onRemoved.addListener((tabId) => {
+  markTabCleared(tabId);
   videoLinks.delete(tabId);
   tabPageUrls.delete(tabId);
+  tabTopUrls.delete(tabId);
+  tabHistory.delete(tabId);
   tabFrameUrls.delete(tabId);
   if (saveTimers.has(tabId)) {
     clearTimeout(saveTimers.get(tabId));
@@ -521,7 +643,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
     drmSaveTimers.delete(tabId);
   }
   if (storage) {
-    storage.remove([`tab_videos_${tabId}`, `tab_page_${tabId}`, `tab_drm_${tabId}`]).catch(() => {});
+    storage.remove([`tab_videos_${tabId}`, `tab_page_${tabId}`, `tab_drm_${tabId}`, `tab_hist_${tabId}`]).catch(() => {});
   }
 });
 
@@ -623,7 +745,9 @@ const CHUNK_URL_RE = /\.(ts|m4s|mp2t|seg|m4f)(\?|#|$)/i;
 const noteChunk = (tabId, rawUrl, reqType, referer) => {
   if (tabId < 0 || !SEG_REQ_TYPES.has(reqType)) return;
   const url = normalizeUrl(rawUrl, true);
-  if (url) groupGenericSegments(tabId, url, reqType, referer || tabPageUrls.get(tabId) || '');
+  if (!url) return;
+  restoreTabLinks(tabId);
+  groupGenericSegments(tabId, url, reqType, referer || tabPageUrls.get(tabId) || '');
 };
 const isChunkHeader = (headers) => (headers || []).some((h) => h.name.toLowerCase() === 'content-type' && /video\/mp2t|audio\/mp2t|video\/iso\.segment/i.test(h.value || ''));
 const SEG_MAX_MEMBERS = 5000;
@@ -1176,12 +1300,14 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   // From popup: clear links
   else if (request.action === 'clearLinks') {
     const tabId = request.tabId;
+    markTabCleared(tabId);
     videoLinks.delete(tabId);
     tabDrm.delete(tabId);
     tabFamilies.delete(tabId);
     tabInits.delete(tabId);
+    tabHistory.set(tabId, []); // Clear empties the tab, including the lists kept for its earlier pages
     if (storage) {
-      storage.remove([`tab_videos_${tabId}`, `tab_drm_${tabId}`]).catch(() => {});
+      storage.remove([`tab_videos_${tabId}`, `tab_drm_${tabId}`, `tab_hist_${tabId}`]).catch(() => {});
     }
     updateBadge(tabId);
     sendResponse({ success: true });
@@ -1270,6 +1396,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
     fetch(mediaUrl, { method: 'HEAD' })
       .then(res => {
+        // An error or login page answering instead of the file: its length is not the media size
+        const type = (res.headers.get('content-type') || '').toLowerCase();
+        if (!res.ok || type.startsWith('text/html')) {
+          sendResponse({ size: 0 });
+          return;
+        }
         const len = res.headers.get('content-length');
         const size = len ? parseInt(len, 10) : 0;
         sendResponse({ size: size });

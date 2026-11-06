@@ -17,7 +17,12 @@ A powerful browser extension for **Chromium-based browsers** (Chrome, Edge, Brav
 - **Search Bar**: Quickly filter streams by URL text, domain name, or filename.
 
 ### ⬇️ 1-Click Direct Browser Download
-- Direct media file downloads right from the browser popup with sanitized filename inference.
+- Direct media file downloads right from the browser popup with sanitized filename inference (named after the video, keeping the file's own extension: `.webm`, `.flac`, `.srt`, ...).
+
+### 📄 One List per Page
+- When the tab moves to another page (a link, the address bar, or an in-page route change; not a `#hash` change), the list starts over for that page.
+- The lists of the last 3 pages are kept, so going **Back** (or opening that page again in the tab) brings its list back. **Clear** empties the tab, including those.
+- The list survives Chrome stopping the extension's background worker when idle.
 
 ### 📦 Batch Export Suite
 - **yt-dlp Batch (`.txt`)**: A URL list for `yt-dlp -a batch.txt`, with each stream's Referer noted as a `# Referer:` comment above it (yt-dlp reads every other line of a batch file as a URL, so headers cannot go in the file; use the per-card **yt-dlp** button for a full command with headers).
@@ -89,6 +94,14 @@ Players that fetch a stream as many small numbered pieces (`seg_0001.mp4`, `chun
 2. Open Chrome/Edge and go to `chrome://extensions/`.
 3. Toggle **Developer mode** in the top-right corner.
 4. Click **Load unpacked** and select this directory.
+
+### 🔄 Updating hls.js (manual)
+The popup's ▶ Play engine is the bundled `hls.min.js` (currently **hls.js 1.7.4**). It does not update itself, so replace it by hand every couple of months:
+
+1. Check the latest version: `npm view hls.js version` (or the [hls.js releases](https://github.com/video-dev/hls.js/releases) page, where breaking changes are listed).
+2. In an empty folder, download the package: `npm pack hls.js@latest` (npm checks the file's integrity), then extract it: `tar -xzf hls.js-*.tgz`.
+3. Copy `package/dist/hls.min.js` over `hls.min.js` in this folder.
+4. Reload the extension in `chrome://extensions`, then press **▶ Play** on an HLS (`.m3u8`) stream in the popup to check it still plays.
 
 ---
 

@@ -47,6 +47,7 @@ document.addEventListener('DOMContentLoaded', () => {
   let searchQuery = '';
   let currentSortMode = 'quality'; // Default: Highest Quality First
   const selectedUrls = new Set(); // Stores explicitly selected URLs (all selected by default)
+  const seenUrls = new Set(); // URLs already listed once in this popup (auto-selected only the first time)
   const activeHlsPlayers = new Map(); // cardId -> Hls instance
   let currentTabDrm = null; // page-level DRM evidence from the background worker (EME usage, DRM manifests, ...)
   const drmProbed = new Set(); // link URLs already checked for DRM during this popup session
@@ -204,10 +205,12 @@ document.addEventListener('DOMContentLoaded', () => {
         return ITAG_MAP[itag];
       }
       const pathLower = (parsed.pathname + parsed.search).toLowerCase();
-      if (pathLower.includes('2160p') || pathLower.includes('4k')) {
+      // "4k" / "2k" only as a word of their own ("_4k.mp4", "/4k/", "res=4k", "4k60"): signed tokens and ids
+      // ("sig=a94kd...") contain these letters by chance
+      if (pathLower.includes('2160p') || /(?:^|[^a-z0-9])4k(?![a-z])/.test(pathLower)) {
         return { label: '4K (2160p)', tagClass: 'quality-tag quality-4k', score: 2160 };
       }
-      if (pathLower.includes('1440p') || pathLower.includes('2k')) {
+      if (pathLower.includes('1440p') || /(?:^|[^a-z0-9])2k(?![a-z])/.test(pathLower)) {
         return { label: '1440p (2K)', tagClass: 'quality-tag quality-1080p', score: 1440 };
       }
       if (pathLower.includes('1080p')) {
@@ -334,6 +337,22 @@ document.addEventListener('DOMContentLoaded', () => {
     } catch (e) {
       return 'video';
     }
+  }
+
+  // Real file type of a link for the Save file name: the extension in the URL path, else the mime= parameter
+  // (YouTube-style links). '' when the URL does not say.
+  const SAVE_EXTS = /^(?:m3u8|mpd|m3u|mp4|webm|mkv|mov|avi|flv|m4v|ogv|wmv|3gp|f4v|mp3|aac|flac|wav|ogg|opus|m4a|vtt|srt|ttml|dfxp|sub)$/;
+  function urlMediaExt(url) {
+    try {
+      const parsed = new URL(url);
+      const m = /\.([a-z0-9]{2,5})$/i.exec(parsed.pathname);
+      if (m && SAVE_EXTS.test(m[1].toLowerCase())) return m[1].toLowerCase();
+      const mime = (parsed.searchParams.get('mime') || '').toLowerCase();
+      if (mime === 'video/mp4') return 'mp4';
+      if (mime === 'audio/mp4') return 'm4a';
+      if (mime === 'video/webm' || mime === 'audio/webm') return 'webm';
+    } catch (e) {}
+    return '';
   }
 
   // Infer clean filename for downloads & exports with page title support
@@ -727,10 +746,13 @@ document.addEventListener('DOMContentLoaded', () => {
       segmentedByUrl.clear();
       currentLinks.forEach((item) => { if (item && item.segmented) segmentedByUrl.set(item.url, item.segmented); });
 
-      // Select all by default on first load or when new items arrive
+      // Select all by default on first load or when new items arrive; items the user unticked stay unticked
       currentLinks.forEach(item => {
         const u = typeof item === 'string' ? item : item.url;
-        selectedUrls.add(u);
+        if (!seenUrls.has(u)) {
+          seenUrls.add(u);
+          selectedUrls.add(u);
+        }
       });
     }
     if (pageUrl !== undefined) {
@@ -969,7 +991,7 @@ document.addEventListener('DOMContentLoaded', () => {
           triggerCopied(downloadBtn, '✓ Playlist');
           return;
         }
-        const fallbackExt = typeInfo.ext || (typeInfo.isSubtitle ? 'vtt' : (typeInfo.isAudio ? 'mp3' : (typeInfo.isHls ? 'm3u8' : 'mp4')));
+        const fallbackExt = typeInfo.ext || urlMediaExt(url) || (typeInfo.isSubtitle ? 'vtt' : (typeInfo.isAudio ? 'mp3' : (typeInfo.isHls ? 'm3u8' : 'mp4')));
         const filename = getCleanFilename(url, fallbackExt);
 
         if (chrome.downloads && chrome.downloads.download) {
@@ -1563,6 +1585,7 @@ document.addEventListener('DOMContentLoaded', () => {
       chrome.runtime.sendMessage({ action: 'clearLinks', tabId: currentTabId }, (response) => {
         if (response && response.success) {
           selectedUrls.clear();
+          seenUrls.clear();
           renderLinks([], currentPageUrl);
         }
       });
