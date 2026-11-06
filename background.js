@@ -1261,7 +1261,7 @@ const probeLinkDrm = async (tabId, rawUrl) => {
   const tabMap = videoLinks.get(tabId);
   const entry = url && tabMap && tabMap.get(drm.keyFor(url));
   if (!entry) return { checked: false };
-  const done = () => entry.drmChecked && (entry.variantsChecked || entry.segmented || !MANIFEST_URL_RE.test(entry.url));
+  const done = () => entry.drmChecked && (entry.variantsChecked || entry.segmented || (!MANIFEST_URL_RE.test(entry.url) && !(entry.addon && entry.addon.manifest)));
   const answer = (checked) => ({
     checked: checked, drm: entry.drm || null, variants: entry.variants || null, variantsChecked: !!entry.variantsChecked,
     duration: entry.duration || 0, live: !!entry.live
@@ -1450,3 +1450,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
   return true; 
 });
+
+// Add-on detection modules (addon-worker.js): they only add links and labels, using the functions above.
+// Optional: if the file is missing or fails, everything above works as before.
+try { importScripts('addon-worker.js'); } catch (e) { console.warn('addon-worker.js not loaded:', e); }

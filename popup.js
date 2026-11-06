@@ -23,6 +23,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const filterSubtitleCount = document.getElementById('filterSubtitleCount');
   const filterDrmCount = document.getElementById('filterDrmCount');
   const filterShortCount = document.getElementById('filterShortCount');
+  const filterEmbedCount = document.getElementById('filterEmbedCount');
   const bestOnlyToggle = document.getElementById('bestOnlyToggle');
   const drmBanner = document.getElementById('drmBanner');
 
@@ -55,6 +56,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const drmProbed = new Set(); // link URLs already checked for DRM during this popup session
   const segmentedByUrl = new Map(); // entry url -> segmented-stream description (see background applySegmentedSignal)
   const itemByUrl = new Map(); // entry url -> its latest data (buttons read it when clicked, so live updates count)
+  const addonByUrl = new Map(); // entry url -> what an add-on detection module found out about it (see addon-*.js)
   const variantsByUrl = new Map(); // master playlist / MPD url -> { type, items }: the qualities it lists
   const variantOf = new Map(); // a quality's own playlist url -> { variant, masterUrl }
   const cardRefs = new Map(); // entry url -> { card, refresh(item), destroy() } for the cards on screen
@@ -377,6 +379,30 @@ document.addEventListener('DOMContentLoaded', () => {
     return el;
   }
 
+  // ---- Add-on detection modules: badge for the links they found -------------------------------
+  const ADDON_BADGES = {
+    content: ['🔎 By content', 'Recognised as a playlist by its content: neither its URL nor the server said so'],
+    page: ['🔗 On page', 'The page points at this file but has not loaded it (yet)'],
+    worker: ['⚙ Service worker', 'Requested by the site\'s service worker (Chrome reports those requests without a tab)'],
+    mse: ['🧪 Player buffer', 'Traced through the video player: these are the pieces it fed the browser, in order, whatever their URLs look like']
+  };
+  const PAGE_VIA = {
+    link: 'A link on the page points at this file; the page has not loaded it.',
+    meta: 'The page names this file in its og:video / og:audio / player tags.',
+    attr: 'A player on the page keeps this URL in its settings (data-* attribute), e.g. until you press play.',
+    frame: 'A frame or object on the page shows this file.'
+  };
+  function buildAddonBadge(item) {
+    const addon = item && item.addon;
+    const spec = addon && addon.source && ADDON_BADGES[addon.source];
+    if (!spec) return null;
+    const el = document.createElement('span');
+    el.className = 'type-tag tag-addon';
+    el.textContent = spec[0];
+    el.title = (addon.source === 'page' && PAGE_VIA[addon.pageVia]) || spec[1];
+    return el;
+  }
+
   // ---- Add-on: duration, short clips ----------------------------------------------------------
   // Length in seconds: read from the manifest / file header by the background worker, a segmented stream's
   // manifest, or YouTube-style dur= in the URL. 0 = unknown.
@@ -420,7 +446,7 @@ document.addEventListener('DOMContentLoaded', () => {
   function qualityGroupKey(item) {
     const url = item.url;
     const t = getMediaType(url);
-    if (t.category === 'subtitle') return '';
+    if (t.category === 'subtitle' || t.category === 'embed') return '';
     const own = variantOf.get(url);
     if (own) return `m:${own.masterUrl}`;
     if (variantsByUrl.has(url)) return `m:${url}`;
@@ -504,6 +530,12 @@ document.addEventListener('DOMContentLoaded', () => {
       const audio = !!segMeta && segMeta.kind === 'audio';
       return { category: audio ? 'audio' : 'video', label: audio ? 'Audio' : 'Video', tagClass: audio ? 'tag-audio' : 'tag-video', isAudio: audio, isVideo: !audio, isSegmented: true, ext: audio ? 'm4a' : 'mp4', icon: audio ? '🎵' : '🎥' };
     }
+    // Add-on (module 1): a playlist recognised by its content, at a URL that does not say so
+    const addon = addonByUrl.get(url);
+    if (addon && addon.manifest === 'hls') return { category: 'stream', label: 'HLS Stream', tagClass: 'tag-stream', isStream: true, isHls: true, icon: '🎬' };
+    if (addon && addon.manifest === 'dash') return { category: 'stream', label: 'DASH Stream', tagClass: 'tag-stream', isStream: true, isDash: true, icon: '🎬' };
+    // Add-on (module 3): an embedded video platform player: a page for yt-dlp, not a file to play or save here
+    if (addon && addon.embed) return { category: 'embed', label: `${addon.embed} embed`, tagClass: 'tag-embed', isEmbed: true, icon: '🧩' };
     const cleanUrl = url.split('?')[0].split('#')[0].toLowerCase();
     if (cleanUrl.endsWith('.vtt') || cleanUrl.endsWith('.srt') || cleanUrl.endsWith('.ttml') || cleanUrl.endsWith('.dfxp') || cleanUrl.endsWith('.sub') || url.includes('/timedtext') || url.includes('format=vtt') || url.includes('format=srt') || url.includes('type=vtt') || url.includes('type=srt') || url.includes('mime=text%2Fvtt')) {
       return { category: 'subtitle', label: 'Subtitle', tagClass: 'tag-subtitle', isSubtitle: true, icon: '💬' };
@@ -864,13 +896,14 @@ document.addEventListener('DOMContentLoaded', () => {
   // Ask the background worker to check listed links for DRM (reads a manifest / the first 64 KB of a file), and
   // manifests for the qualities they list. Results are stored per link, so each link is only ever checked once.
   const MANIFEST_URL_RE = /\.(?:m3u8|m3u|mpd)(?:[?#]|$)|[?&](?:format|type|output)=(?:m3u8|mpd|hls|dash)\b/i;
-  const wantsVariants = (item) => !item.variantsChecked && !item.segmented && MANIFEST_URL_RE.test(item.url);
+  const wantsVariants = (item) => !item.variantsChecked && !item.segmented && (MANIFEST_URL_RE.test(item.url) || !!(item.addon && item.addon.manifest));
   function scheduleDrmProbes() {
     if (currentTabId === undefined) return;
     currentLinks.forEach((item) => {
       const url = item && item.url;
       if (!url || (item.drmChecked && !wantsVariants(item)) || drmProbed.has(url)) return;
-      if (getMediaType(url).category === 'subtitle' || /\.(?:mp3|wav|aac|flac|ogg|opus)(?:[?#]|$)/i.test(url)) return;
+      const category = getMediaType(url).category;
+      if (category === 'subtitle' || category === 'embed' || /\.(?:mp3|wav|aac|flac|ogg|opus)(?:[?#]|$)/i.test(url)) return;
       if (drmProbed.size >= 60) return;
       drmProbed.add(url);
       chrome.runtime.sendMessage({ action: 'probeDrm', tabId: currentTabId, url: url }, (res) => {
@@ -982,6 +1015,7 @@ document.addEventListener('DOMContentLoaded', () => {
     let audio = 0;
     let subtitles = 0;
     let shortClips = 0;
+    let embeds = 0;
     let drmCount = 0;
 
     links.forEach(item => {
@@ -990,6 +1024,7 @@ document.addEventListener('DOMContentLoaded', () => {
       else if (category === 'audio') audio++;
       else if (category === 'subtitle') subtitles++;
       else if (category === 'short') shortClips++;
+      else if (category === 'embed') embeds++;
       else videos++;
       if (isDrmConfirmed(item)) drmCount++;
     });
@@ -1000,6 +1035,7 @@ document.addEventListener('DOMContentLoaded', () => {
     filterAudioCount.textContent = audio;
     if (filterSubtitleCount) filterSubtitleCount.textContent = subtitles;
     if (filterShortCount) filterShortCount.textContent = shortClips;
+    if (filterEmbedCount) filterEmbedCount.textContent = embeds;
     if (filterDrmCount) filterDrmCount.textContent = drmCount;
   }
 
@@ -1109,11 +1145,13 @@ document.addEventListener('DOMContentLoaded', () => {
     });
     currentLinks = Array.from(uniqueMap.values());
     itemByUrl.clear();
+    addonByUrl.clear();
     segmentedByUrl.clear();
     variantsByUrl.clear();
     variantOf.clear();
     currentLinks.forEach((item) => {
       itemByUrl.set(item.url, item);
+      if (item.addon && typeof item.addon === 'object') addonByUrl.set(item.url, item.addon);
       if (item.segmented) segmentedByUrl.set(item.url, item.segmented);
       registerVariants(item);
     });
@@ -1353,7 +1391,9 @@ document.addEventListener('DOMContentLoaded', () => {
         const segBadge = document.createElement('span');
         segBadge.className = 'type-tag tag-seg';
         segBadge.textContent = segMeta ? `🧩 ${segMeta.count} segments${segMeta.endMs ? ` · ${formatDuration(segMeta.endMs)}` : ''}` : '🧩 Segmented';
-        segBadge.title = segMeta && segMeta.generic
+        segBadge.title = cur && cur.addon && cur.addon.source === 'mse'
+          ? `One stream: the ${segMeta ? segMeta.count : ''} pieces the page's video player fed the browser after its init segment, in order. Durations are not known. Use "⬇ .m3u8" to export.`
+          : segMeta && segMeta.generic
           ? `One stream fetched as numbered pieces (${segMeta.observed} seen), listed once. Range and durations are inferred from the requests. Use "⬇ .m3u8" to export.`
           : 'One stream delivered as many small pieces, listed once. Use "⬇ .m3u8" to export the full segment list.';
         tagRow.appendChild(segBadge);
@@ -1396,7 +1436,7 @@ document.addEventListener('DOMContentLoaded', () => {
         sizeSpan.className = 'size-badge';
         sizeSpan.textContent = `📦 ${formatFileSize(sizeBytes)}`;
         tagRow.appendChild(sizeSpan);
-      } else if (!typeInfo.isStream && !typeInfo.isSegmented) {
+      } else if (!typeInfo.isStream && !typeInfo.isSegmented && !typeInfo.isEmbed) {
         requestMediaSize(url);
       }
 
@@ -1420,6 +1460,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
       const expiry = buildExpiryBadge(url);
       if (expiry) tagRow.appendChild(expiry);
+
+      // How an add-on detection module found this link (links the existing detection found carry no badge)
+      const addonBadge = buildAddonBadge(cur);
+      if (addonBadge) tagRow.appendChild(addonBadge);
 
       if (cur && cur.isMobile) {
         const mobileBadge = document.createElement('span');
@@ -1501,6 +1545,7 @@ document.addEventListener('DOMContentLoaded', () => {
     previewBtn.innerHTML = '▶ Play';
     previewBtn.title = 'Test play live stream / media in popup';
     if (typeInfo.isSegmented) previewBtn.style.display = 'none'; // a single piece is not playable on its own
+    if (typeInfo.isEmbed) previewBtn.style.display = 'none'; // a player page, not a media file
 
     // 2. Direct Download Button
     const downloadBtn = document.createElement('button');
@@ -1512,6 +1557,7 @@ document.addEventListener('DOMContentLoaded', () => {
       downloadBtn.innerHTML = '⬇ .m3u8';
       downloadBtn.title = 'Export an .m3u8 playlist with every segment of this stream (open it with ffmpeg / VLC / mpv)';
     }
+    if (typeInfo.isEmbed) downloadBtn.style.display = 'none'; // saving the player page is no use: copy it for yt-dlp
 
     downloadBtn.addEventListener('click', () => {
       if (typeInfo.isSegmented) {

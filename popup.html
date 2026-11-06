@@ -672,6 +672,20 @@
       color: #fde68a;
     }
 
+    .tag-embed {
+      background: rgba(244, 114, 182, 0.15);
+      border: 1px solid rgba(244, 114, 182, 0.45);
+      color: #fbcfe8;
+      text-transform: none;
+    }
+
+    .tag-addon {
+      background: rgba(45, 212, 191, 0.12);
+      border: 1px solid rgba(45, 212, 191, 0.4);
+      color: #99f6e4;
+      text-transform: none;
+    }
+
     .tag-duration {
       background: rgba(148, 163, 184, 0.12);
       border: 1px solid rgba(148, 163, 184, 0.35);
@@ -1151,6 +1165,7 @@
         <button class="filter-pill" data-filter="audio">Audio <span id="filterAudioCount" class="pill-badge">0</span></button>
         <button class="filter-pill" data-filter="short" title="Audio / video up to a minute long, or files under 500 KB when the length is unknown (UI sounds, previews, ad clips)">⏱ Short <span id="filterShortCount" class="pill-badge">0</span></button>
         <button class="filter-pill" data-filter="subtitle">💬 Subs <span id="filterSubtitleCount" class="pill-badge">0</span></button>
+        <button class="filter-pill" data-filter="embed" title="Embedded players of video platforms (YouTube, Vimeo, ...): copy them, with this page as Referer, for yt-dlp">🧩 Embeds <span id="filterEmbedCount" class="pill-badge">0</span></button>
         <button class="filter-pill" data-filter="drm" title="Streams confirmed as DRM-protected">🔒 DRM <span id="filterDrmCount" class="pill-badge">0</span></button>
       </div>
     </div>

@@ -1,4 +1,4 @@
-# Video Link Extractor Pro (v5.1)
+# Video Link Extractor Pro (v5.2)
 
 A powerful browser extension for **Chromium-based browsers** (Chrome, Edge, Brave, Opera, Vivaldi, etc.) that automatically sniffs, captures, previews, and exports streaming video and audio links from any webpage.
 
@@ -13,7 +13,7 @@ A powerful browser extension for **Chromium-based browsers** (Chrome, Edge, Brav
 - Full video controls with audio/video stream testing.
 
 ### 🔍 Real-Time Search & Category Filters
-- **Filter Pills**: Instant switching between `All`, `🎬 Streams` (HLS/DASH), `🎥 Videos` (MP4/WebM), `🎵 Audio` (MP3/AAC/M4A), `⏱ Short`, `💬 Subs` and `🔒 DRM`.
+- **Filter Pills**: Instant switching between `All`, `🎬 Streams` (HLS/DASH), `🎥 Videos` (MP4/WebM), `🎵 Audio` (MP3/AAC/M4A), `⏱ Short`, `💬 Subs`, `🧩 Embeds` and `🔒 DRM`.
 - **⏱ Short**: audio and video up to a minute long (or, when the length is unknown, files under 500 KB): UI sounds, previews, ad clips. They are listed here instead of under Videos / Audio, and still under All.
 - **⭐ Best only** (off by default, remembered): when a video comes in several qualities, only the best one is ticked, so **Copy (N)** and the exports give one link per video. Qualities are recognised as a master playlist and its quality playlists, YouTube itags of one video, or file names / folders that differ only by a quality (`clip_720p.mp4` / `clip_1080p.mp4`, `/720/clip.mp4`). Boxes you tick or untick yourself stay as you set them; turning it off ticks again what it unticked.
 - **Search Bar**: Quickly filter streams by URL text, domain name, or filename.
@@ -56,6 +56,20 @@ A powerful browser extension for **Chromium-based browsers** (Chrome, Edge, Brav
 4. **📱 Mobile Safari UA Fallback**: Automatic/manual isolated probe to uncover direct MP4 sources from mobile-optimized video players.
 5. **Frame-Level Referer Resolution**: Pinpoints nested iframe origins for CORS/Hotlink protected streams.
 6. **🔒 DRM Detection (Add-on)**: works on any site, video or music. See below.
+
+### 🧩 Add-on Detection Modules
+Five extra detection layers on top of the ones above. They only **add** links (and labels on links); everything the layers above find is still found exactly as before. They live in their own files (`addon-page.js` in the page, `addon-content.js` next to `content.js`, `addon-worker.js` loaded at the end of the background worker), and every hook passes straight through to the browser's own function.
+
+| Module | Finds | Card shows |
+| :--- | :--- | :--- |
+| **1. Playlists by content** | HLS / DASH playlists at URLs that do not say so (`/api/stream?id=7`), served as `text/plain`, `application/octet-stream`, ... It reads at most the first 2 KB of a copy of the response. An extension-less URL the server types as a playlist gets the right label too. | `HLS Stream` / `DASH Stream` (qualities, length, ▶ Play), `🔎 By content` |
+| **2. Links & player settings** | Media the page points at without loading it: download links (`<a href="…mp4">`), `og:video` / `og:audio` / `twitter:player:stream` tags (read per OpenGraph group), frames / objects showing a file, and media URLs kept in `data-*` attributes (click-to-play players, JSON configs), in Shadow DOM too. A bare file name without a path is never taken for a link. Up to 150 per frame. | `🔗 On page` |
+| **3. Embedded players** | Frames (lazy `data-src` ones too) and `og:video` tags showing a YouTube, Vimeo, Dailymotion, Wistia, Brightcove, JW Player, Streamable, Twitch, Kaltura, Rumble, Odysee, Bilibili, Facebook, TikTok or SoundCloud player. YouTube is listed by its watch URL. | `Vimeo embed`, … in the **🧩 Embeds** tab: Copy / + Ref / + Name / yt-dlp with this page as Referer (what yt-dlp needs), no Play / Save |
+| **4. Service-worker requests** | Media a site's service worker fetches (Chrome reports those requests without a tab), through the same filters as the network sniffer, given to the tab showing that site (the one playing sound, else the active one). | `⚙ Service worker` |
+| **5. Player buffer** | Streams a video player builds itself with Media Source Extensions: each piece it feeds the browser is traced back to the request it came from, so even fully obfuscated segment URLs become one **🧩 segments** card (⬇ .m3u8 export, ffmpeg). It stays out when the stream is already covered (a playlist on the page, pieces already listed or grouped, Spotify's player). Pieces a player rewrites before feeding them (TS turned into MP4, decrypted) cannot be traced. | `🧪 Player buffer` |
+
+- Page scans (modules 2 and 3) look at the whole page once loaded and each time the popup opens, and otherwise only at what the page adds, in slices of a few milliseconds, so even a huge page that keeps changing stays responsive.
+- Links added by a module get the same `URL|Referer|Name` outputs as any other card.
 
 ---
 
