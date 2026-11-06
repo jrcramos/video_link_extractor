@@ -400,6 +400,89 @@
     return null;
   }
 
+  // ------------------------------------------------------------------ duration
+  // "PT1H2M3.5S" -> 3723.5
+  function isoDurationSeconds(s) {
+    const m = /^P(?:(\d+(?:\.\d+)?)D)?(?:T(?:(\d+(?:\.\d+)?)H)?(?:(\d+(?:\.\d+)?)M)?(?:(\d+(?:\.\d+)?)S)?)?$/i.exec(String(s || '').trim());
+    if (!m) return 0;
+    return (Number(m[1]) || 0) * 86400 + (Number(m[2]) || 0) * 3600 + (Number(m[3]) || 0) * 60 + (Number(m[4]) || 0);
+  }
+  const roundSec = (s) => (s > 0 && s < 7 * 86400 ? Math.round(s * 10) / 10 : 0);
+
+  // Length of a stream from its manifest: an HLS media playlist adds up its #EXTINF once it has an end marker,
+  // a DASH MPD states mediaPresentationDuration. complete = the whole text was read (not cut short).
+  // -> { seconds, live } or null (master playlists: their qualities carry the duration)
+  function manifestDuration(text, complete) {
+    try {
+      if (typeof text !== 'string' || text.length < 8) return null;
+      const head = text.slice(0, 8192);
+      if (head.includes('#EXTM3U')) {
+        if (text.includes('#EXT-X-STREAM-INF')) return null;
+        if (!/#EXT-X-ENDLIST/.test(text)) return complete ? { seconds: 0, live: true } : null;
+        let total = 0;
+        const re = /#EXTINF:\s*([\d.]+)/g;
+        let m;
+        while ((m = re.exec(text)) !== null) total += parseFloat(m[1]) || 0;
+        return roundSec(total) ? { seconds: roundSec(total), live: false } : null;
+      }
+      if (head.includes('<MPD')) {
+        const mpd = /<(?:[\w-]+:)?MPD\b([^>]*)>/i.exec(text);
+        if (!mpd) return null;
+        if ((attrOf(mpd[1], 'type') || '').toLowerCase() === 'dynamic') return { seconds: 0, live: true };
+        const secs = roundSec(isoDurationSeconds(attrOf(mpd[1], 'mediaPresentationDuration')));
+        return secs ? { seconds: secs, live: false } : null;
+      }
+    } catch (e) { /* not a manifest we can read */ }
+    return null;
+  }
+
+  // Length of a media file from its first bytes: MP4 / M4A 'mvhd' (or 'mehd' for fragmented files) when the index
+  // sits at the start of the file, WebM Segment Info Duration. 0 when the first bytes do not say.
+  function mediaFileDuration(u8) {
+    try {
+      if (!u8 || u8.length < 16) return 0;
+      if (['ftyp', 'moov'].includes(fourcc(u8, 4))) {
+        let timescale = 0, units = 0, fragUnits = 0;
+        for (let i = 4; i + 12 <= u8.length; i++) {
+          const t = fourcc(u8, i);
+          if (t === 'mvhd' && !timescale) {
+            if (u8[i + 4] === 1 && i + 36 <= u8.length) {
+              timescale = u32(u8, i + 24);
+              units = u32(u8, i + 28) * 4294967296 + u32(u8, i + 32);
+            } else if (i + 24 <= u8.length) {
+              timescale = u32(u8, i + 16);
+              units = u32(u8, i + 20);
+            }
+          } else if (t === 'mehd' && !fragUnits) {
+            fragUnits = u8[i + 4] === 1 && i + 16 <= u8.length ? u32(u8, i + 8) * 4294967296 + u32(u8, i + 12) : u32(u8, i + 8);
+          }
+        }
+        const total = units > 0 && units !== 0xffffffff ? units : fragUnits;
+        return timescale > 0 ? roundSec(total / timescale) : 0;
+      }
+      if (u32(u8, 0) === 0x1a45dfa3) { // EBML (WebM / Matroska)
+        let scale = 1000000; // TimecodeScale, nanoseconds per tick
+        for (let i = 0; i + 4 < u8.length; i++) {
+          if (u8[i] === 0x2a && u8[i + 1] === 0xd7 && u8[i + 2] === 0xb1 && (u8[i + 3] & 0x80)) {
+            const n = u8[i + 3] & 0x7f;
+            if (n >= 1 && n <= 8 && i + 4 + n <= u8.length) {
+              let v = 0;
+              for (let k = 0; k < n; k++) v = v * 256 + u8[i + 4 + k];
+              if (v > 0) scale = v;
+            }
+          } else if (u8[i] === 0x44 && u8[i + 1] === 0x89 && (u8[i + 2] === 0x84 || u8[i + 2] === 0x88)) {
+            const n = u8[i + 2] === 0x84 ? 4 : 8;
+            if (i + 3 + n > u8.length) break;
+            const view = new DataView(u8.buffer, u8.byteOffset + i + 3, n);
+            const ticks = n === 4 ? view.getFloat32(0) : view.getFloat64(0);
+            return roundSec((ticks * scale) / 1e9);
+          }
+        }
+      }
+    } catch (e) { /* unreadable header */ }
+    return 0;
+  }
+
   // HLS master playlists list their keys in the media playlists: URI of the first variant / rendition to follow
   function firstPlaylistUri(text) {
     if (typeof text !== 'string' || !text.includes('#EXT-X-STREAM-INF')) {
@@ -592,8 +675,8 @@
       // generic evidence
       systemName, systemFromKeySystem, parsePssh, initDataInfo, analyzeMp4Head, analyzeManifest, firstPlaylistUri,
       isLicenseRequest, stripQuery, mergeInfo,
-      // qualities listed in a manifest
-      parseVariants
+      // qualities listed in a manifest, duration of a manifest / media file
+      parseVariants, manifestDuration, mediaFileDuration
     }),
     enumerable: false,
     configurable: false

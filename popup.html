@@ -339,9 +339,10 @@
       justify-content: space-between;
       width: 100%;
       box-sizing: border-box;
+      flex-wrap: wrap; /* the filter tabs move to a second line when the row is full */
     }
 
-    .select-all-label {
+    .select-all-label, .best-only-label {
       display: inline-flex;
       align-items: center;
       gap: 5px;
@@ -359,7 +360,12 @@
       flex-shrink: 0;
     }
 
-    .select-all-label:hover {
+    .best-only-label:has(input:checked) {
+      border-color: var(--primary);
+      color: var(--text-main);
+    }
+
+    .select-all-label:hover, .best-only-label:hover {
       background: var(--border-color);
       color: var(--text-main);
     }
@@ -664,6 +670,19 @@
       background: rgba(234, 179, 8, 0.15);
       border: 1px solid rgba(234, 179, 8, 0.4);
       color: #fde68a;
+    }
+
+    .tag-duration {
+      background: rgba(148, 163, 184, 0.12);
+      border: 1px solid rgba(148, 163, 184, 0.35);
+      color: var(--text-main);
+      text-transform: none;
+    }
+
+    .tag-live {
+      background: rgba(239, 68, 68, 0.18);
+      border: 1px solid rgba(239, 68, 68, 0.5);
+      color: #fca5a5;
     }
 
     .tag-expiry {
@@ -1111,6 +1130,10 @@
         <input type="checkbox" id="selectAllCheckbox" class="select-all-checkbox" checked />
         <span id="selectAllText">All</span>
       </label>
+      <label class="best-only-label" title="When a video comes in several qualities, tick only the best one (boxes you set by hand stay as they are)">
+        <input type="checkbox" id="bestOnlyToggle" class="select-all-checkbox" />
+        <span>⭐ Best only</span>
+      </label>
       <div class="search-box">
         <span class="search-icon">🔍</span>
         <input type="text" id="searchInput" class="search-input" placeholder="Search link, title, or domain..." />
@@ -1126,6 +1149,7 @@
         <button class="filter-pill" data-filter="stream">Streams <span id="filterStreamCount" class="pill-badge">0</span></button>
         <button class="filter-pill" data-filter="video">Videos <span id="filterVideoCount" class="pill-badge">0</span></button>
         <button class="filter-pill" data-filter="audio">Audio <span id="filterAudioCount" class="pill-badge">0</span></button>
+        <button class="filter-pill" data-filter="short" title="Audio / video up to a minute long, or files under 500 KB when the length is unknown (UI sounds, previews, ad clips)">⏱ Short <span id="filterShortCount" class="pill-badge">0</span></button>
         <button class="filter-pill" data-filter="subtitle">💬 Subs <span id="filterSubtitleCount" class="pill-badge">0</span></button>
         <button class="filter-pill" data-filter="drm" title="Streams confirmed as DRM-protected">🔒 DRM <span id="filterDrmCount" class="pill-badge">0</span></button>
       </div>

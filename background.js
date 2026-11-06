@@ -1124,16 +1124,18 @@ const releaseProbeSlot = () => {
 // Text-looking payload (manifest) vs binary (MP4): '#', '<', a UTF-8 BOM or leading whitespace
 const looksTextual = (u8) => !!u8 && u8.length > 0 && (u8[0] === 0x23 || u8[0] === 0x3c || u8[0] === 0xef || u8[0] === 0x20 || u8[0] === 0x0a || u8[0] === 0x0d);
 
+// -> { bytes, complete } (complete = the body ended before the read limit)
 const readProbeBody = async (res) => {
-  if (!res.body) return new Uint8Array(0);
+  if (!res.body) return { bytes: new Uint8Array(0), complete: true };
   const reader = res.body.getReader();
   const chunks = [];
   let total = 0;
   let limit = DRM_HEAD_BYTES;
+  let complete = false;
   try {
     while (total < limit) {
       const { done, value } = await reader.read();
-      if (done) break;
+      if (done) { complete = true; break; }
       chunks.push(value);
       total += value.length;
       if (limit === DRM_HEAD_BYTES && looksTextual(chunks[0])) limit = DRM_TEXT_MAX;
@@ -1144,7 +1146,7 @@ const readProbeBody = async (res) => {
   const out = new Uint8Array(total);
   let p = 0;
   for (const c of chunks) { out.set(c, p); p += c.length; }
-  return out;
+  return { bytes: out, complete: complete };
 };
 
 // Some hosts only answer with the page's Referer / Origin: send them for this one request via a session rule
@@ -1181,21 +1183,25 @@ const withProbeReferer = async (url, referer, fn) => {
 };
 
 // First bytes of a URL (or the whole manifest, capped) and the URL it came from after redirects.
-// null on network / HTTP failure.
-const probeFetch = async (url, referer) => {
+// whole = no Range header (a playlist the server cut to the first 64 KB is read again in full).
+// -> { bytes, url, complete, cutByRange }, null on network / HTTP failure.
+const probeFetch = async (url, referer, whole = false) => {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), DRM_PROBE_TIMEOUT_MS);
   try {
     return await withProbeReferer(url, referer, async () => {
       const res = await fetch(url, {
         method: 'GET',
-        headers: { Range: `bytes=0-${DRM_HEAD_BYTES - 1}` },
+        headers: whole ? {} : { Range: `bytes=0-${DRM_HEAD_BYTES - 1}` },
         credentials: 'include',
         cache: 'no-store',
         signal: ctrl.signal
       });
       if (!res.ok && res.status !== 206) return null;
-      return { bytes: await readProbeBody(res), url: res.url || url };
+      const body = await readProbeBody(res);
+      const total = /\/(\d+)\s*$/.exec(res.headers.get('content-range') || '');
+      const cutByRange = res.status === 206 && !!total && Number(total[1]) > body.bytes.length;
+      return { bytes: body.bytes, url: res.url || url, complete: body.complete && !cutByRange, cutByRange: cutByRange };
     });
   } catch (e) {
     return null;
@@ -1204,29 +1210,46 @@ const probeFetch = async (url, referer) => {
   }
 };
 
-// -> { ok: false } on failure, else { ok: true, info, variants } (info null = looked, found no encryption;
-// variants = the qualities a master playlist / MPD lists, or null)
+// -> { ok: false } on failure, else { ok: true, info, variants, duration, live } (info null = looked, found no
+// encryption; variants = the qualities a master playlist / MPD lists, or null; duration in seconds, 0 = unknown;
+// live = a stream without an end)
 const probeUrlForDrm = async (url, referer, hop) => {
-  const got = await probeFetch(url, referer);
+  let got = await probeFetch(url, referer);
   if (!got) return { ok: false };
+  if (looksTextual(got.bytes) && got.cutByRange) {
+    // the server answered the Range request with only the start of a playlist: read it whole for its length
+    const whole = await probeFetch(url, referer, true);
+    if (whole) got = whole;
+  }
   const bytes = got.bytes;
+  const lengthOf = (d) => ({ duration: d && d.seconds ? d.seconds : 0, live: !!(d && d.live) });
   if (looksTextual(bytes)) {
     let text = '';
     try { text = new TextDecoder().decode(bytes); } catch (e) {}
     const variants = hop === 0 && typeof drm.parseVariants === 'function' ? drm.parseVariants(text, got.url) : null;
+    const own = lengthOf(typeof drm.manifestDuration === 'function' ? drm.manifestDuration(text, got.complete) : null);
     const info = drm.analyzeManifest(text);
-    if (info || hop >= 1) return { ok: true, info: info, variants: variants };
-    // HLS master playlists keep their keys in the media playlists: follow one hop
-    const next = drm.firstPlaylistUri(text);
+    if (hop >= 1) return { ok: true, info: info, variants: null, ...own };
+    // HLS master playlists keep their keys and their length in the media playlists: follow one hop
+    const next = (!info || (!own.duration && !own.live)) ? drm.firstPlaylistUri(text) : null;
     if (next) {
       try {
         const follow = await probeUrlForDrm(new URL(next, got.url).toString(), referer, hop + 1);
-        if (follow.ok) return { ok: true, info: follow.info, variants: variants };
+        if (follow.ok) {
+          return {
+            ok: true,
+            info: info || follow.info,
+            variants: variants,
+            duration: own.duration || follow.duration || 0,
+            live: own.live || (!own.duration && !!follow.live)
+          };
+        }
       } catch (e) {}
     }
-    return { ok: true, info: null, variants: variants };
+    return { ok: true, info: info, variants: variants, ...own };
   }
-  return { ok: true, info: drm.analyzeMp4Head(bytes), variants: null };
+  const fileDuration = typeof drm.mediaFileDuration === 'function' ? drm.mediaFileDuration(bytes) : 0;
+  return { ok: true, info: drm.analyzeMp4Head(bytes), variants: null, duration: fileDuration, live: false };
 };
 
 // A manifest by its URL: worth reading for the qualities it lists even when its DRM status is already known
@@ -1239,7 +1262,10 @@ const probeLinkDrm = async (tabId, rawUrl) => {
   const entry = url && tabMap && tabMap.get(drm.keyFor(url));
   if (!entry) return { checked: false };
   const done = () => entry.drmChecked && (entry.variantsChecked || entry.segmented || !MANIFEST_URL_RE.test(entry.url));
-  const answer = (checked) => ({ checked: checked, drm: entry.drm || null, variants: entry.variants || null, variantsChecked: !!entry.variantsChecked });
+  const answer = (checked) => ({
+    checked: checked, drm: entry.drm || null, variants: entry.variants || null, variantsChecked: !!entry.variantsChecked,
+    duration: entry.duration || 0, live: !!entry.live
+  });
   if (done()) return answer(true);
   if (DRM_PROBE_SKIP.test(entry.url)) {
     entry.drmChecked = true;
@@ -1258,6 +1284,8 @@ const probeLinkDrm = async (tabId, rawUrl) => {
     }
     entry.variantsChecked = true;
     if (result.variants) entry.variants = result.variants;
+    if (result.duration > 0) entry.duration = result.duration;
+    if (result.live) entry.live = true;
     entry.drmChecked = true;
     if (result.info) {
       entry.drm = drm.mergeInfo(entry.drm, result.info);

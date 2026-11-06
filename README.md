@@ -13,7 +13,9 @@ A powerful browser extension for **Chromium-based browsers** (Chrome, Edge, Brav
 - Full video controls with audio/video stream testing.
 
 ### 🔍 Real-Time Search & Category Filters
-- **Filter Pills**: Instant switching between `All`, `🎬 Streams` (HLS/DASH), `🎥 Videos` (MP4/WebM), and `🎵 Audio` (MP3/AAC/M4A).
+- **Filter Pills**: Instant switching between `All`, `🎬 Streams` (HLS/DASH), `🎥 Videos` (MP4/WebM), `🎵 Audio` (MP3/AAC/M4A), `⏱ Short`, `💬 Subs` and `🔒 DRM`.
+- **⏱ Short**: audio and video up to a minute long (or, when the length is unknown, files under 500 KB): UI sounds, previews, ad clips. They are listed here instead of under Videos / Audio, and still under All.
+- **⭐ Best only** (off by default, remembered): when a video comes in several qualities, only the best one is ticked, so **Copy (N)** and the exports give one link per video. Qualities are recognised as a master playlist and its quality playlists, YouTube itags of one video, or file names / folders that differ only by a quality (`clip_720p.mp4` / `clip_1080p.mp4`, `/720/clip.mp4`). Boxes you tick or untick yourself stay as you set them; turning it off ticks again what it unticked.
 - **Search Bar**: Quickly filter streams by URL text, domain name, or filename.
 
 ### ⬇️ 1-Click Direct Browser Download
@@ -28,6 +30,10 @@ A powerful browser extension for **Chromium-based browsers** (Chrome, Edge, Brav
 ### 📶 Qualities Inside HLS / DASH Streams
 - The one-time manifest check (see DRM below) also reads the qualities a master `.m3u8` or an `.mpd` lists. The card shows the best one (`1080p`) and sorts by it, and a playlist the player loaded on its own gets its resolution too.
 - **📶 N tracks** opens one row per quality, audio and subtitle track (`1080p · 30 fps · 4.5 Mb/s`, `Audio · English`, ...). For HLS, each row has **Copy**, **+ Ref** and **+ Name** for that quality's own playlist, in the same formats as the card buttons, using the card's Referer and name. DASH tracks have no URL of their own, so they are listed only.
+
+### 🕒 Length of Each Link
+- Cards show how long each stream or file is (`🕒 42:10`), or `🔴 Live` for a stream without an end. The length comes from data the extension already reads once per link: an HLS playlist's segment lengths (a master playlist: those of its first quality), a DASH manifest's stated duration, the header of an MP4 / M4A (when its index is at the start of the file) or WebM file, or YouTube-style `dur=` in the URL.
+- A playlist the server answers with only its first 64 KB is read again in full, so long playlists get their real length.
 
 ### ⏳ Expiry of Signed Links
 - Links that carry an expiry time (`expire=`, `Expires=`, `exp=` as in Akamai tokens, S3 `X-Amz-Date` + `X-Amz-Expires`) show the time left: `⏳ 5 h left`, yellow under an hour, `⌛ Expired` after. Links valid for more than 30 days show nothing.

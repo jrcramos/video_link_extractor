@@ -22,6 +22,8 @@ document.addEventListener('DOMContentLoaded', () => {
   const filterAudioCount = document.getElementById('filterAudioCount');
   const filterSubtitleCount = document.getElementById('filterSubtitleCount');
   const filterDrmCount = document.getElementById('filterDrmCount');
+  const filterShortCount = document.getElementById('filterShortCount');
+  const bestOnlyToggle = document.getElementById('bestOnlyToggle');
   const drmBanner = document.getElementById('drmBanner');
 
   // Export elements
@@ -64,6 +66,24 @@ document.addEventListener('DOMContentLoaded', () => {
   let pageMediaNames = { exact: new Map(), byPath: new Map() };
   let topMediaNames = [];
   let frameMediaNames = [];
+
+  // "⭐ Best only" switch, remembered between popups (off by default)
+  function initBestOnly() {
+    if (!bestOnlyToggle) return;
+    if (chrome.storage && chrome.storage.local) {
+      chrome.storage.local.get({ [BEST_ONLY_KEY]: false }, (res) => {
+        if (res && res[BEST_ONLY_KEY]) {
+          setBestOnly(true);
+          if (currentLinks.length) scheduleRelayout();
+        }
+      });
+    }
+    bestOnlyToggle.addEventListener('change', () => {
+      setBestOnly(bestOnlyToggle.checked);
+      if (chrome.storage && chrome.storage.local) chrome.storage.local.set({ [BEST_ONLY_KEY]: bestOnly });
+      applyLiveLinks(currentLinks.slice()); // re-ticks / unticks the cards on screen without rebuilding them
+    });
+  }
 
   // Theme Management
   function initTheme() {
@@ -355,6 +375,120 @@ document.addEventListener('DOMContentLoaded', () => {
     el.textContent = left <= 0 ? '⌛ Expired' : `⏳ ${formatTimeLeft(left)} left`;
     el.title = `Signed link: ${left <= 0 ? 'expired' : 'expires'} ${new Date(at).toLocaleString()}. After that the server refuses it, so download it before then, or reload the page for a fresh link.`;
     return el;
+  }
+
+  // ---- Add-on: duration, short clips ----------------------------------------------------------
+  // Length in seconds: read from the manifest / file header by the background worker, a segmented stream's
+  // manifest, or YouTube-style dur= in the URL. 0 = unknown.
+  function getDurationSec(item) {
+    if (!item || typeof item !== 'object') return 0;
+    if (item.duration > 0) return item.duration;
+    if (item.segmented && item.segmented.endMs > 0) return item.segmented.endMs / 1000;
+    try {
+      const d = parseFloat(new URL(item.url).searchParams.get('dur') || '0');
+      if (d > 0) return d;
+    } catch (e) {}
+    return 0;
+  }
+
+  // Short audio / video (UI sounds, previews, ad clips): up to a minute long, or, when the length is unknown, a
+  // file under 500 KB. They get their own filter tab instead of the Videos / Audio ones.
+  const SHORT_MAX_SEC = 60;
+  const SHORT_MAX_BYTES = 500 * 1024;
+  function isShortClip(item) {
+    if (!item || typeof item !== 'object' || item.live) return false;
+    const t = getMediaType(item.url);
+    if (t.category !== 'video' && t.category !== 'audio') return false;
+    const d = getDurationSec(item);
+    if (d > 0) return d <= SHORT_MAX_SEC;
+    const size = getMediaSize(item);
+    return !t.isSegmented && size > 0 && size < SHORT_MAX_BYTES;
+  }
+
+  // Filter tab of a link: its media category, or 'short'
+  function filterCategory(item) {
+    const url = typeof item === 'string' ? item : item.url;
+    return isShortClip(item) ? 'short' : getMediaType(url).category;
+  }
+
+  // ---- Add-on: best quality only -----------------------------------------------------------------
+  // Links that are qualities of one video: a master playlist and its quality playlists, YouTube itags of one id
+  // (video and audio apart), or files whose names / folders differ only by a quality (clip_720p.mp4,
+  // clip_1080p.mp4, /720/clip.mp4). '' = not part of such a group.
+  const QUALITY_TOKEN = /(^|[/_.-])(?:\d{3,4}p\d{0,2}|[248]k|uhd|fhd|hd|sd|high|low|mobile)(?=[/_.-]|$)/g;
+  const HEIGHT_FOLDER = /\/(?:144|240|360|480|540|576|720|1080|1440|2160|4320)(?=\/)/g;
+  function qualityGroupKey(item) {
+    const url = item.url;
+    const t = getMediaType(url);
+    if (t.category === 'subtitle') return '';
+    const own = variantOf.get(url);
+    if (own) return `m:${own.masterUrl}`;
+    if (variantsByUrl.has(url)) return `m:${url}`;
+    let u;
+    try { u = new URL(url); } catch (e) { return ''; }
+    const kind = t.category === 'audio' ? 'a' : 'v';
+    if (/\/videoplayback$/.test(u.pathname) && u.searchParams.get('id')) {
+      const mime = (u.searchParams.get('mime') || '').toLowerCase();
+      return `yt:${u.host}:${u.searchParams.get('id')}:${mime.startsWith('audio') ? 'a' : kind}`;
+    }
+    const path = u.pathname.toLowerCase();
+    const stripped = path.replace(QUALITY_TOKEN, '$1~').replace(HEIGHT_FOLDER, '/~');
+    return stripped === path ? '' : `f:${u.origin}${stripped}:${kind}`;
+  }
+
+  // Ranking inside a group: quality score, then size; a master playlist beats its own quality playlists.
+  function qualityRank(item) {
+    const q = getStreamQuality(item.url);
+    let score = q ? q.score : 0;
+    if (score === 100 || score === 700) { // no resolution in the URL: a height folder ("/1080/") still tells
+      const folder = /\/(144|240|360|480|540|576|720|1080|1440|2160|4320)\//.exec(item.url);
+      if (folder) score = Number(folder[1]);
+    }
+    return { score: score + (variantsByUrl.has(item.url) ? 0.5 : 0), size: getMediaSize(item) };
+  }
+
+  // Best only: in each group, unticks everything but the best quality. Only touches links it unticked itself
+  // and never a box the user set by hand; turning it off ticks those again. A group whose best cannot be told
+  // (same quality, sizes unknown) is left alone.
+  const BEST_ONLY_KEY = 'bestOnly';
+  let bestOnly = false;
+  const autoUnticked = new Set();
+  const userTouched = new Set();
+  function applyBestOnly() {
+    if (!bestOnly) return;
+    const groups = new Map();
+    currentLinks.forEach((item) => {
+      const key = qualityGroupKey(item);
+      if (!key) return;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(item);
+    });
+    groups.forEach((members) => {
+      if (members.length < 2) return;
+      const ranked = members.map((item) => ({ item, r: qualityRank(item) }))
+        .sort((a, b) => (b.r.score - a.r.score) || (b.r.size - a.r.size));
+      const [first, second] = ranked;
+      if (first.r.score === second.r.score && (!first.r.size || !second.r.size || first.r.size === second.r.size)) return;
+      ranked.forEach(({ item }, i) => {
+        if (userTouched.has(item.url)) return;
+        if (i === 0) {
+          if (autoUnticked.delete(item.url)) selectedUrls.add(item.url);
+        } else if (selectedUrls.has(item.url)) {
+          selectedUrls.delete(item.url);
+          autoUnticked.add(item.url);
+        }
+      });
+    });
+  }
+
+  function setBestOnly(on) {
+    bestOnly = !!on;
+    if (bestOnlyToggle) bestOnlyToggle.checked = bestOnly;
+    if (bestOnly) applyBestOnly();
+    else {
+      autoUnticked.forEach((u) => selectedUrls.add(u));
+      autoUnticked.clear();
+    }
   }
 
   // Helper to categorize media type & identify category key
@@ -755,10 +889,16 @@ document.addEventListener('DOMContentLoaded', () => {
           registerVariants(cur);
           changed = true;
         }
-        if (changed) {
-          refreshAllCards(); // a master's qualities also label the cards of its own quality playlists
-          updateFilterCounts(currentLinks);
+        if (res.duration > 0 && cur.duration !== res.duration) {
+          cur.duration = res.duration;
+          changed = true;
         }
+        if (res.live && !cur.live) {
+          cur.live = true;
+          changed = true;
+        }
+        // a master's qualities also label its quality playlists; a length can move a card to the Short tab
+        if (changed) scheduleRelayout();
         if (res.drm && res.drm.type === 'drm') {
           // a confirmed DRM stream also means the page has DRM content: refresh the page-level banner
           chrome.runtime.sendMessage({ action: 'getLinks', tabId: currentTabId }, (r) => {
@@ -841,14 +981,15 @@ document.addEventListener('DOMContentLoaded', () => {
     let videos = 0;
     let audio = 0;
     let subtitles = 0;
+    let shortClips = 0;
     let drmCount = 0;
 
     links.forEach(item => {
-      const url = typeof item === 'string' ? item : item.url;
-      const typeInfo = getMediaType(url);
-      if (typeInfo.category === 'stream') streams++;
-      else if (typeInfo.category === 'audio') audio++;
-      else if (typeInfo.category === 'subtitle') subtitles++;
+      const category = filterCategory(item);
+      if (category === 'stream') streams++;
+      else if (category === 'audio') audio++;
+      else if (category === 'subtitle') subtitles++;
+      else if (category === 'short') shortClips++;
       else videos++;
       if (isDrmConfirmed(item)) drmCount++;
     });
@@ -858,6 +999,7 @@ document.addEventListener('DOMContentLoaded', () => {
     filterVideoCount.textContent = videos;
     filterAudioCount.textContent = audio;
     if (filterSubtitleCount) filterSubtitleCount.textContent = subtitles;
+    if (filterShortCount) filterShortCount.textContent = shortClips;
     if (filterDrmCount) filterDrmCount.textContent = drmCount;
   }
 
@@ -866,12 +1008,11 @@ document.addEventListener('DOMContentLoaded', () => {
     const list = currentLinks.filter(item => {
       const url = typeof item === 'string' ? item : item.url;
       const referer = (typeof item === 'object' && item.referer) ? item.referer : '';
-      const typeInfo = getMediaType(url);
 
       // 1. Pill Filter ('drm' is a cross-category filter: any link confirmed as DRM-protected)
       if (activeFilter === 'drm') {
         if (!isDrmConfirmed(item)) return false;
-      } else if (activeFilter !== 'all' && typeInfo.category !== activeFilter) {
+      } else if (activeFilter !== 'all' && filterCategory(item) !== activeFilter) {
         return false;
       }
 
@@ -984,6 +1125,14 @@ document.addEventListener('DOMContentLoaded', () => {
         selectedUrls.add(item.url);
       }
     });
+    applyBestOnly();
+  }
+
+  // Re-sorts the cards into their tabs and ticks with the data known now (a probe found a length, a size, ...)
+  let relayoutTimer = null;
+  function scheduleRelayout() {
+    clearTimeout(relayoutTimer);
+    relayoutTimer = setTimeout(() => applyLiveLinks(currentLinks.slice()), 150);
   }
 
   // Render list of links: the whole list (on open, and when the filter, search, sort or selection changes)
@@ -1126,6 +1275,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
     cardCheckbox.addEventListener('change', (e) => {
       e.stopPropagation();
+      userTouched.add(url); // set by hand: Best only leaves it alone
+      autoUnticked.delete(url);
       if (cardCheckbox.checked) {
         selectedUrls.add(url);
         card.classList.add('is-selected');
@@ -1247,6 +1398,24 @@ document.addEventListener('DOMContentLoaded', () => {
         tagRow.appendChild(sizeSpan);
       } else if (!typeInfo.isStream && !typeInfo.isSegmented) {
         requestMediaSize(url);
+      }
+
+      // Length (a segmented stream's badge already shows it), or Live for a stream without an end
+      if (cur && cur.live) {
+        const liveBadge = document.createElement('span');
+        liveBadge.className = 'type-tag tag-live';
+        liveBadge.textContent = '🔴 Live';
+        liveBadge.title = 'Live stream: its playlist has no end yet';
+        tagRow.appendChild(liveBadge);
+      } else if (!(typeInfo.isSegmented && cur && cur.segmented && cur.segmented.endMs)) {
+        const seconds = getDurationSec(cur);
+        if (seconds > 0) {
+          const durBadge = document.createElement('span');
+          durBadge.className = 'type-tag tag-duration';
+          durBadge.textContent = `🕒 ${formatDuration(seconds * 1000)}`;
+          durBadge.title = 'Length';
+          tagRow.appendChild(durBadge);
+        }
       }
 
       const expiry = buildExpiryBadge(url);
@@ -1668,6 +1837,10 @@ document.addEventListener('DOMContentLoaded', () => {
       if (!item) return true;
       const now = getMediaType(url);
       if (!previewBox && (now.category !== typeInfo.category || !!now.isSegmented !== !!typeInfo.isSegmented)) return false;
+      const selected = selectedUrls.has(url); // Best only may have changed it
+      cardCheckbox.checked = selected;
+      card.classList.toggle('is-selected', selected);
+      card.classList.toggle('not-selected', !selected);
       showThumb();
       showTitle();
       fillTags();
@@ -1692,8 +1865,7 @@ document.addEventListener('DOMContentLoaded', () => {
       sizeRequests.delete(url);
       const size = (!chrome.runtime.lastError && res && res.size > 0) ? res.size : 0;
       probedSizes.set(url, size);
-      const ref = cardRefs.get(url);
-      if (size > 0 && ref) ref.refresh(itemByUrl.get(url) || null);
+      if (size > 0) scheduleRelayout(); // shows the size; a tiny file moves to the Short tab
     });
   }
 
@@ -1854,6 +2026,8 @@ document.addEventListener('DOMContentLoaded', () => {
           selectedUrls.delete(u);
         });
       }
+      // chosen by hand: Best only leaves these alone
+      visible.forEach((item) => { userTouched.add(item.url); autoUnticked.delete(item.url); });
       renderLinks();
     });
   }
@@ -1990,6 +2164,7 @@ document.addEventListener('DOMContentLoaded', () => {
           segmented: segmentedByUrl.get(url) || null,
           type: typeInfo.label,
           category: typeInfo.category,
+          durationSeconds: getDurationSec(item) || null,
           extractedAt: new Date().toISOString()
         };
       });
@@ -2054,6 +2229,8 @@ document.addEventListener('DOMContentLoaded', () => {
         if (response && response.success) {
           selectedUrls.clear();
           seenUrls.clear();
+          userTouched.clear();
+          autoUnticked.clear();
           renderLinks([], currentPageUrl);
         }
       });
@@ -2062,5 +2239,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Initialize
   initTheme();
+  initBestOnly();
   requestLinks();
 });
