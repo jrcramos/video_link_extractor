@@ -1,4 +1,4 @@
-# Video Link Extractor Pro (v5.2)
+# Video Link Extractor Pro (v5.3)
 
 A powerful browser extension for **Chromium-based browsers** (Chrome, Edge, Brave, Opera, Vivaldi, etc.) that automatically sniffs, captures, previews, and exports streaming video and audio links from any webpage.
 
@@ -50,8 +50,8 @@ A powerful browser extension for **Chromium-based browsers** (Chrome, Edge, Brav
 - **Structured JSON (`.json`)**: Full export of detected URLs, referer origins, and metadata.
 
 ### ⚡ Multi-Layer Deep Stream Sniffing
-1. **Network Sniffer**: Intercepts video/audio headers, manifest formats, and query signatures.
-2. **Main World API Hooking**: Intercepts `fetch()`, `XMLHttpRequest` (which also catches dash.js manifests), `Hls.prototype.loadSource`, and `HTMLMediaElement.src`.
+1. **Network Sniffer**: Intercepts video/audio headers, manifest formats, and query signatures, including downloads whose `Content-Disposition` names a media file while the server labels them `application/octet-stream`.
+2. **Main World API Hooking**: Intercepts `fetch()`, `XMLHttpRequest` (which also catches dash.js manifests), `Hls.prototype.loadSource`, and `HTMLMediaElement.src`. Links found before the content script is listening (e.g. in a JSON response at page start) are kept until it is, not lost.
 3. **Shadow DOM & DOM Observer**: Traverses nested Web Components, `<video>`, `<audio>`, and `<source>` elements.
 4. **📱 Mobile Safari UA Fallback**: Automatic/manual isolated probe to uncover direct MP4 sources from mobile-optimized video players.
 5. **Frame-Level Referer Resolution**: Pinpoints nested iframe origins for CORS/Hotlink protected streams.

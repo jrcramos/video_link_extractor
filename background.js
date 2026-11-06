@@ -85,8 +85,13 @@ const isVideoHeader = (headers) => {
 
     if (name === 'content-type') {
       // Exclude raw transport stream chunks from flooding
-      if (val.includes('video/mp2t') || val.includes('video/iso.segment') || val.includes('application/octet-stream')) {
+      if (val.includes('video/mp2t') || val.includes('video/iso.segment')) {
         return false;
+      }
+      // A generic binary type says nothing either way: a Content-Disposition naming a media file (checked on its own
+      // header) still counts, whichever of the two headers the server sends first
+      if (val.includes('application/octet-stream')) {
+        continue;
       }
       
       if (

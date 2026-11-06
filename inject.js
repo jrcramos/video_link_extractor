@@ -68,18 +68,23 @@
     });
 
     if (cleanMap.size > 0) {
-      window.postMessage({
+      const message = {
         type: '__VLE_SNIFFED_MEDIA__',
         links: Array.from(cleanMap.values())
-      }, '*');
+      };
+      // content.js only listens from document_idle: links found before then (a JSON response, a player config
+      // read at page start) wait in a queue, like the DRM signals below, instead of being lost
+      if (drmChannelReady) window.postMessage(message, '*');
+      else if (mediaQueue.length < 500) mediaQueue.push(message);
     }
   }
 
   // ---- Add-on: DRM signal channel to content.js -------------------------------------------------
   // inject.js runs at document_start but content.js only at document_idle, so signals are queued until
   // content.js announces itself (__VLE_CONTENT_READY__) and are then delivered in order.
-  let drmChannelReady = false;
+  let drmChannelReady = false; // content.js is listening (it says so once loaded)
   const drmQueue = [];
+  const mediaQueue = []; // links found before content.js was listening (see emitLinks)
   const seenManifests = new Set();
 
   function postDrmSignal(payload) {
@@ -97,6 +102,7 @@
     if (event.source !== window || !event.data || event.data.type !== '__VLE_CONTENT_READY__' || drmChannelReady) return;
     drmChannelReady = true;
     drmQueue.splice(0).forEach((p) => { try { postDrmSignal(p); } catch (e) {} });
+    mediaQueue.splice(0).forEach((m) => { try { window.postMessage(m, '*'); } catch (e) {} });
   });
 
   // Streaming manifests (DASH / HLS / Smooth) the page downloads: report DRM / encryption they declare
