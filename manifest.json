@@ -1,8 +1,9 @@
 {
   "manifest_version": 3,
   "name": "Video Link Extractor Pro",
-  "version": "5.6",
+  "version": "5.7",
   "description": "Automatically detects video/audio streams from network requests, web pages, JSON APIs, and media sources.",
+  "incognito": "split",
   "permissions": [
     "webRequest",
     "declarativeNetRequest",

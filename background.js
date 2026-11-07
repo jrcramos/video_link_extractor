@@ -33,7 +33,14 @@ if (chrome.storage && chrome.storage.local) {
       mobileScanMode = res.mobileScanMode;
     }
   });
+  // Incognito windows run their own copy of this worker ("incognito": "split" in manifest.json, so ▶ Play can open
+  // its player tab there): a choice made in either kind of window reaches both copies
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === 'local' && changes.mobileScanMode && changes.mobileScanMode.newValue) mobileScanMode = changes.mobileScanMode.newValue;
+  });
 }
+// The two copies share one set of session header rules: the Incognito copy numbers its rules apart
+const IN_INCOGNITO = !!(chrome.extension && chrome.extension.inIncognitoContext);
 
 // Settings (⚙ in the popup): the number of links on the toolbar icon. On unless turned off; turning it off or
 // on again updates every tab's icon (a tab's count is read back from storage after a worker restart).
@@ -342,7 +349,7 @@ const htmlSignatureUrlRegex = /https?:\/\/[^\s"'<>\\]+(?:mime=video|mime=audio|m
 
 // fetch() cannot set User-Agent or Sec-CH-UA-* (Chrome drops them silently), so the probe request gets them from a
 // short-lived session rule that only matches this worker's own requests to the page's site.
-const MOBILE_UA_RULE_BASE = 1200;
+const MOBILE_UA_RULE_BASE = IN_INCOGNITO ? 1250 : 1200; // 50 ids each
 let mobileUaRuleSeq = 0;
 const withMobileUA = async (pageUrl, fn) => {
   const dnr = chrome.declarativeNetRequest;
@@ -1178,7 +1185,7 @@ const withProbeReferer = async (url, referer, fn) => {
   let origin = '';
   try { origin = new URL(referer).origin; } catch (e) {}
   if (!dnr || !dnr.updateSessionRules || !origin || !/^https?:/i.test(referer) || /[*^|]/.test(url)) return fn();
-  const id = 9000 + (probeRuleSeq++ % 900);
+  const id = (IN_INCOGNITO ? 10000 : 9000) + (probeRuleSeq++ % 900);
   try {
     await dnr.updateSessionRules({
       removeRuleIds: [id],

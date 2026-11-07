@@ -117,8 +117,11 @@ document.addEventListener('DOMContentLoaded', () => {
   const setMobileMode = document.getElementById('setMobileMode');
   const setIconCount = document.getElementById('setIconCount');
   let playInTab = false; // ▶ Play opens player.html in a new tab instead of playing in the popup
-  const playLabel = () => (playInTab ? '▶ Play ↗' : '▶ Play');
-  const playTitle = () => (playInTab ? 'Play in a new tab' : 'Test play live stream / media in popup');
+  // (Incognito windows too: manifest.json runs the extension in Chrome's "split" Incognito mode, which lets it open
+  // its own pages there)
+  const playsInTab = () => playInTab;
+  const playLabel = () => (playsInTab() ? '▶ Play ↗' : '▶ Play');
+  const playTitle = () => (playsInTab() ? 'Play in a new tab' : 'Test play live stream / media in popup');
   function applyPlayLabels() {
     document.querySelectorAll('.btn-preview:not(.active)').forEach((b) => { b.innerHTML = playLabel(); b.title = playTitle(); });
   }
@@ -164,8 +167,9 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  // ▶ Play with "In a new tab": the player tab (player.html) plays the link with its Referer, next to this tab
-  function openPlayerTab(url, typeInfo, referer, poster) {
+  // ▶ Play with "In a new tab": the player tab (player.html) plays the link with its Referer, next to this tab.
+  // onFail: Chrome refused to open it (the popup stays open then): the caller plays it here instead.
+  function openPlayerTab(url, typeInfo, referer, poster, onFail) {
     const isHls = url.includes('.m3u8') || url.includes('format=hls') || url.includes('format=m3u8') || url.includes('/hls/') || typeInfo.isHls;
     const kind = typeInfo.isAudio ? 'audio' : (typeInfo.isDash ? 'dash' : (isHls ? 'hls' : 'video'));
     const params = new URLSearchParams({
@@ -173,7 +177,9 @@ document.addEventListener('DOMContentLoaded', () => {
       drm: typeInfo.isDrm ? (typeInfo.drmProvider || 'DRM') : ''
     });
     const page = `${chrome.runtime.getURL('player.html')}?${params.toString()}`;
-    const open = (tab) => chrome.tabs.create(tab ? { url: page, index: tab.index + 1, openerTabId: tab.id } : { url: page });
+    const open = (tab) => chrome.tabs.create(tab ? { url: page, index: tab.index + 1, openerTabId: tab.id } : { url: page }, (created) => {
+      if ((chrome.runtime.lastError || !created) && typeof onFail === 'function') onFail();
+    });
     if (currentTabId === undefined) { open(null); return; }
     chrome.tabs.get(currentTabId, (tab) => { open(!chrome.runtime.lastError && tab ? tab : null); });
   }
@@ -1810,12 +1816,18 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     let previewBox = null;
+    let forcePopupPlay = false; // the player tab could not be opened: play here this once
 
     // Video Preview Toggle Handler with Hls.js player engine
     previewBtn.addEventListener('click', () => {
-      // Settings (⚙): "▶ Play opens: In a new tab". A preview already playing here can still be stopped.
-      if (playInTab && !previewBox) {
-        openPlayerTab(url, typeInfo, refererOf(), posterOf());
+      // Settings (⚙): "▶ Play opens: In a new tab". A preview already playing here can still be stopped; if Chrome
+      // refuses to open the tab, it plays here as before.
+      if (playsInTab() && !previewBox && !forcePopupPlay) {
+        openPlayerTab(url, typeInfo, refererOf(), posterOf(), () => {
+          forcePopupPlay = true;
+          previewBtn.click();
+          forcePopupPlay = false;
+        });
         return;
       }
       if (previewBox) {

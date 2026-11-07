@@ -45,6 +45,9 @@
       audioEl.autoplay = true;
       audioEl.src = src;
       stage.appendChild(audioEl);
+      // Chrome may not let a tab start sound by itself before you click in it: say so instead of sitting silent
+      const p = audioEl.play();
+      if (p && typeof p.catch === 'function') p.catch((e) => { if (e && e.name === 'NotAllowedError') note('▶ Press play: Chrome only lets a tab start sound after you click in it.', false); });
       audioEl.addEventListener('error', () => {
         if (drm) note(`🔒 <strong>DRM-protected</strong>: this player can't decrypt this ${drm} stream.<br>Play it in a DRM-capable player instead.`, true);
         else note('⚠️ <strong>Media Error</strong>: Server rejected direct playback.<br>Use <strong>[⬇ Save]</strong> or copy with <strong>[+ Ref]</strong> / <strong>[yt-dlp]</strong> in the popup.', true);
@@ -61,7 +64,7 @@
       if (p && typeof p.then === 'function') {
         p.catch(() => {
           videoEl.muted = true;
-          videoEl.play().catch(() => {});
+          videoEl.play().catch(() => note('▶ Press play: Chrome did not let this tab start the video by itself.', false));
         });
       }
     };
