@@ -1987,6 +1987,14 @@ document.addEventListener('DOMContentLoaded', () => {
     nameScanTimer = setTimeout(readNames, delay);
   }
 
+  // Add-on (module 11): the page's media session named a file it is playing: read the names again
+  if (chrome.runtime && chrome.runtime.onMessage) {
+    chrome.runtime.onMessage.addListener((request, sender) => {
+      if (request && request.action === 'addon2SessionName' && sender && sender.tab && sender.tab.id === currentTabId) scheduleNameScan();
+      return false;
+    });
+  }
+
   // ---- Live list ---------------------------------------------------------------------------------
   // The background worker saves a tab's list whenever it changes: while the popup is open, follow those saves
   let liveTimer = null;

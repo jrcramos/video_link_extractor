@@ -35,6 +35,9 @@
 
   const baseUrl = () => { try { return document.baseURI || location.href; } catch (e) { return ''; } };
   const httpOnly = (u) => (typeof u === 'string' && /^https?:\/\//i.test(u) ? u : '');
+  // taken before any page script runs, so a page that replaces them changes nothing here
+  const TextDecoderOf = window.TextDecoder;
+  const hasOwn = Object.prototype.hasOwnProperty;
 
   // =============================================================================================
   // Module 6: what inject.js cannot read in a response
@@ -48,6 +51,7 @@
   const TEXT_TYPE = (ct) => {
     const t = String(ct || '').toLowerCase();
     if (t.includes('mpegurl') || t.includes('dash+xml') || t.includes('svg')) return false; // playlists: owned by the existing analysis
+    if (t.includes('event-stream')) return false; // a stream of events that may never end, not a document
     return t.includes('json') || t.includes('text') || t.includes('javascript') || t.includes('xml');
   };
   const PLAYLIST_URL = /\.(?:mpd|m3u8|m3u)(?:[?#]|$)/i;
@@ -55,9 +59,32 @@
   function reportHidden(text, how) {
     if (hiddenSent.size >= HIDDEN_MAX || typeof text !== 'string' || text.length > MAX_BODY || !dec.mayHaveMedia(text)) return;
     const found = dec.extract(text, baseUrl(), { exclude: true }).filter((f) => !hiddenSent.has(f.url));
-    if (!found.length) return;
-    found.slice(0, HIDDEN_MAX - hiddenSent.size).forEach((f) => hiddenSent.add(f.url));
-    emit({ module: 'hidden', how: how, urls: found.slice(0, 60) });
+    const take = found.slice(0, Math.min(60, HIDDEN_MAX - hiddenSent.size));
+    if (!take.length) return;
+    take.forEach((f) => hiddenSent.add(f.url));
+    emit({ module: 'hidden', how: how, urls: take });
+  }
+
+  // The copy of a response is read only up to MAX_BODY: a response that streams on (chat replies, live logs, an
+  // answer with no Content-Length) is given up past that, instead of being held in memory as it grows
+  function readCopy(res) {
+    const body = res.body;
+    if (!body || typeof body.getReader !== 'function' || typeof TextDecoderOf !== 'function') return Promise.resolve('');
+    const reader = body.getReader();
+    const decoder = new TextDecoderOf();
+    let text = '';
+    let size = 0;
+    const step = () => reader.read().then(({ done, value }) => {
+      if (done) return text + decoder.decode();
+      size += value ? value.byteLength : 0;
+      if (size > MAX_BODY) {
+        reader.cancel().catch(() => {});
+        return '';
+      }
+      if (value) text += decoder.decode(value, { stream: true });
+      return step();
+    });
+    return step();
   }
 
   if (typeof window.fetch === 'function') {
@@ -68,7 +95,7 @@
           if (res && res.type !== 'opaque' && typeof res.clone === 'function' && res.headers && !res.bodyUsed && !PLAYLIST_URL.test(res.url || '')) {
             const type = res.headers.get('content-type');
             if (TEXT_TYPE(type) && Number(res.headers.get('content-length') || 0) <= MAX_BODY) {
-              res.clone().text().then((t) => reportHidden(t, 'fetch')).catch(() => {});
+              readCopy(res.clone()).then((t) => reportHidden(t, 'fetch')).catch(() => {});
             }
           }
         } catch (e) {}
@@ -86,6 +113,7 @@
             if (PLAYLIST_URL.test(this.responseURL || '')) return;
             const type = this.getResponseHeader('content-type');
             if (type && !TEXT_TYPE(type)) return;
+            if (Number(this.getResponseHeader('content-length') || 0) > MAX_BODY) return; // not turned back into text
             const rt = this.responseType;
             if (rt === '' || rt === 'text') reportHidden(this.responseText, 'xhr');
             else if (rt === 'json' && this.response) reportHidden(typeof this.response === 'string' ? this.response : JSON.stringify(this.response), 'xhr');
@@ -303,7 +331,9 @@
   // Module 10: media URLs named in messages the page receives
   // Reading event.data of a WebSocket message, a message from a frame / window, a worker, a MessageChannel or a
   // server-sent event: once per message, the text (or the strings of a small object) is looked through like a
-  // response. The extension's own messages (type __VLE_...) are skipped.
+  // response. The extension's own messages (type __VLE_...) are skipped. Objects are only looked into when the
+  // browser delivered the message (a copy: plain data); an event the page made itself may carry live objects whose
+  // getters must not be run.
   // =============================================================================================
   const MESSAGE_MAX = 150;
   const messageSent = new Set();
@@ -320,7 +350,19 @@
       if (!x || typeof x !== 'object' || depth > 6 || visited.has(x)) continue;
       if (x instanceof ArrayBuffer || ArrayBuffer.isView(x) || (typeof Blob === 'function' && x instanceof Blob)) continue;
       visited.add(x);
-      try { Object.keys(x).slice(0, 200).forEach((k) => stack.push([x[k], depth + 1])); } catch (e) {}
+      try {
+        // at most 200 items per array / object, without listing all keys of a huge one first
+        if (Array.isArray(x)) {
+          for (let i = 0, n = Math.min(x.length, 200); i < n; i++) stack.push([x[i], depth + 1]);
+        } else {
+          let n = 0;
+          for (const k in x) {
+            if (!hasOwn.call(x, k)) continue;
+            if (++n > 200) break;
+            stack.push([x[k], depth + 1]);
+          }
+        }
+      } catch (e) {}
     }
     return out.join('\n');
   };
@@ -342,6 +384,7 @@
       if (value.length < 12 || value.length > 1000000 || !dec.mayHaveMedia(value)) return;
       text = value;
     } else if (value && typeof value === 'object') {
+      if (!ev.isTrusted) return; // made by the page itself: its objects stay untouched
       if (typeof value.type === 'string' && value.type.startsWith('__VLE_')) return; // this extension's own channel
       if (value instanceof ArrayBuffer || ArrayBuffer.isView(value)) return;
       text = stringsOf(value);

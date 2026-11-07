@@ -54,6 +54,7 @@
     const entry = entryFor(tabId, norm);
     if (!entry || entry.addon || entry.segmented) return null;
     entry.addon = { ...label, source: source, onlyNew: true };
+    if (opts.poster && entry.poster === opts.poster) entry.addon.ownPoster = true;
     if (opts.duration > 0 && !entry.duration) {
       entry.duration = opts.duration;
       entry.addon.ownDuration = true;
@@ -62,14 +63,21 @@
     return entry;
   };
 
-  // ---- an existing finder reached a link one of these modules listed first: store what it would have stored
-  const confirmOld = (tabId, url, view) => {
+  // ---- an existing finder reached a link one of these modules listed first: store what it would have stored.
+  // After a worker restart the tab's stored list is merged into the finder's fresh entry only after a storage read,
+  // and that merge brings this module's label back: so the stored list is waited for first.
+  const confirmOld = async (tabId, url, view) => {
     noteOld(tabId, url);
+    const fresh = entryFor(tabId, url); // the finder's own entry, before a merge can change it
+    const freshTime = fresh && !isOnlyNew(fresh) ? fresh.timestamp : 0;
+    await restoreTabLinks(tabId);
     const entry = entryFor(tabId, url);
     if (!isOnlyNew(entry)) return;
+    if (freshTime && entry === fresh) entry.timestamp = freshTime; // the merge gave it the stored, older time
     if (view.referer) entry.referer = view.referer;
     if (view.isMobile) entry.isMobile = true;
     if (entry.addon.ownDuration) delete entry.duration;
+    if (entry.addon.ownPoster) entry.poster = view.poster || '';
     if (view.addon) entry.addon = view.addon;
     else delete entry.addon;
     saveTabLinksDebounced(tabId);
@@ -79,7 +87,7 @@
   const confirmByNetwork = (details) => {
     try {
       if (details.tabId < 0 || !details.url) return;
-      confirmOld(details.tabId, details.url, { referer: getRefererFromDetails(details) || tabPageUrls.get(details.tabId) || '' });
+      confirmOld(details.tabId, details.url, { referer: getRefererFromDetails(details) || tabPageUrls.get(details.tabId) || '' }).catch(() => {});
     } catch (e) {}
   };
   chrome.webRequest.onBeforeSendHeaders.addListener(
@@ -121,7 +129,7 @@
                 if (typeof pageUrl !== 'string' || pageUrl.split('#')[0] !== input) return;
                 links.forEach((u) => {
                   const norm = normalizeUrl(u);
-                  if (norm) confirmOld(tabId, norm, { referer: pageUrl, isMobile: true });
+                  if (norm) confirmOld(tabId, norm, { referer: pageUrl, isMobile: true }).catch(() => {});
                 });
               });
             })).catch(() => {});
@@ -220,16 +228,22 @@
       sendResponse({ ok: true });
       return false;
     }
+    // addon2-content.js tells an open popup that a media session named a file (the popup reads the names itself)
+    if (request.action === 'addon2SessionName') {
+      sendResponse({ ok: true });
+      return false;
+    }
 
     // ---- the existing finders, watched (never answered: background.js / addon-worker.js answer them)
     try {
       if (request.action === 'addLinksFromContent' && tabId >= 0 && Array.isArray(request.links)) {
-        // content.js: the Referer background.js's handler passes for a new link
+        // content.js: the Referer (and poster) background.js's handler passes for a new link
         const fallback = (sender.tab && sender.tab.url) || '';
         request.links.forEach((item) => {
           const url = typeof item === 'string' ? item : (item && item.url);
           const referer = (typeof item === 'object' && item && item.referer) || request.frameUrl || fallback;
-          if (typeof url === 'string') confirmOld(tabId, url, { referer: referer || tabPageUrls.get(tabId) || '' });
+          const poster = (typeof item === 'object' && item && item.poster) || '';
+          if (typeof url === 'string') confirmOld(tabId, url, { referer: referer || tabPageUrls.get(tabId) || '', poster: poster }).catch(() => {});
         });
       } else if (request.action === 'addonDetect' && tabId >= 0 && Array.isArray(request.items)) {
         // add-on modules 1-3: the entry addon-worker.js would have made
@@ -241,7 +255,7 @@
           if (item.module === 'manifest' && (item.manifest === 'hls' || item.manifest === 'dash')) addon = { manifest: item.manifest, source: 'content' };
           else if (item.module === 'page') addon = { pageVia: ['link', 'meta', 'attr', 'frame'].includes(item.via) ? item.via : 'link', source: 'page' };
           else if (item.module === 'embed' && typeof item.provider === 'string') addon = { embed: item.provider.replace(/[^\w .-]/g, '').slice(0, 30), source: 'embed' };
-          if (addon) confirmOld(tabId, url, { referer: refererFor(url, frameUrl), addon: addon });
+          if (addon) confirmOld(tabId, url, { referer: refererFor(url, frameUrl), addon: addon }).catch(() => {});
         });
       }
     } catch (e) {}

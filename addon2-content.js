@@ -74,6 +74,9 @@
     const at = sessionNames.findIndex((e) => e.url === url);
     if (at >= 0) sessionNames[at] = { url: url, name: name };
     else if (sessionNames.length < 300) sessionNames.push({ url: url, name: name });
+    else return;
+    // an open popup reads the names again (it does so on its own only when new links come in)
+    try { chrome.runtime.sendMessage({ action: 'addon2SessionName' }, () => { void chrome.runtime.lastError; }); } catch (e) {}
   }
 
   // ---- from addon2-page.js (untrusted page context: the background checks every field again)
