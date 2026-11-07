@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Player - Video Link Extractor Pro</title>
+  <style>
+    :root, [data-theme="midnight"] { --bg: #0b0f19; --surface: #111827; --border: #222f46; --text: #f8fafc; --muted: #94a3b8; --accent: #6366f1; }
+    [data-theme="oled"] { --bg: #000000; --surface: #09090b; --border: #27272a; --text: #ffffff; --muted: #a1a1aa; --accent: #6366f1; }
+    [data-theme="cyberpunk"] { --bg: #0d0221; --surface: #19053b; --border: #44108c; --text: #f8fafc; --muted: #cbd5e1; --accent: #00f0ff; }
+    [data-theme="light"] { --bg: #f1f5f9; --surface: #ffffff; --border: #cbd5e1; --text: #0f172a; --muted: #475569; --accent: #3b82f6; }
+    html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--text); font-family: system-ui, -apple-system, 'Segoe UI', sans-serif; }
+    .wrap { max-width: 1280px; margin: 0 auto; padding: 18px 20px 28px; box-sizing: border-box; }
+    h1 { font-size: 17px; margin: 0 0 12px; font-weight: 700; overflow-wrap: anywhere; }
+    .stage { background: #000; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; display: flex; align-items: center; justify-content: center; min-height: 120px; }
+    video { width: 100%; max-height: calc(100vh - 170px); display: block; background: #000; }
+    audio { width: calc(100% - 32px); margin: 40px 16px; }
+    .note { margin-top: 10px; font-size: 13px; line-height: 1.5; padding: 9px 12px; border-radius: 8px; background: var(--surface); border: 1px solid var(--border); }
+    .note.error { color: #fca5a5; border-color: rgba(239, 68, 68, 0.4); }
+    .meta { margin-top: 12px; font-size: 12px; color: var(--muted); display: grid; grid-template-columns: max-content 1fr; gap: 4px 10px; }
+    .meta span:nth-child(even) { overflow-wrap: anywhere; font-family: ui-monospace, Consolas, monospace; color: var(--text); }
+  </style>
+</head>
+<body data-theme="midnight">
+  <div class="wrap">
+    <h1 id="title">Player</h1>
+    <div class="stage" id="stage"></div>
+    <div id="notes"></div>
+    <div class="meta">
+      <span>Link</span><span id="linkText"></span>
+      <span>Referer</span><span id="refText"></span>
+    </div>
+  </div>
+  <script src="hls.min.js"></script>
+  <script src="player.js"></script>
+</body>
+</html>

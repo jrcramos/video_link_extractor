@@ -109,6 +109,75 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
+  // ---- Settings (⚙) -------------------------------------------------------------------------------
+  // Saved in chrome.storage.local. "📱 Mobile scan" is the same setting as the header's selector (the two are kept
+  // in step and both go through its handler); the others are new and start as the extension worked before.
+  const settingsModal = document.getElementById('settingsModal');
+  const setPlayTarget = document.getElementById('setPlayTarget');
+  const setMobileMode = document.getElementById('setMobileMode');
+  const setIconCount = document.getElementById('setIconCount');
+  let playInTab = false; // ▶ Play opens player.html in a new tab instead of playing in the popup
+  const playLabel = () => (playInTab ? '▶ Play ↗' : '▶ Play');
+  const playTitle = () => (playInTab ? 'Play in a new tab' : 'Test play live stream / media in popup');
+  function applyPlayLabels() {
+    document.querySelectorAll('.btn-preview:not(.active)').forEach((b) => { b.innerHTML = playLabel(); b.title = playTitle(); });
+  }
+  function initSettings() {
+    if (!settingsModal) return;
+    const apply = (res) => {
+      playInTab = !!(res && res.playInTab);
+      if (setPlayTarget) setPlayTarget.value = playInTab ? 'tab' : 'popup';
+      if (setIconCount) setIconCount.checked = !(res && res.showIconCount === false);
+      applyPlayLabels();
+    };
+    if (chrome.storage && chrome.storage.local) {
+      chrome.storage.local.get({ playInTab: false, showIconCount: true }, apply);
+      chrome.storage.onChanged.addListener((changes, area) => {
+        if (area !== 'local' || (!changes.playInTab && !changes.showIconCount)) return;
+        chrome.storage.local.get({ playInTab: false, showIconCount: true }, apply);
+      });
+    }
+    const settingsBtn = document.getElementById('settingsBtn');
+    const closeBtn = document.getElementById('settingsCloseBtn');
+    const close = () => settingsModal.classList.remove('show');
+    if (settingsBtn) settingsBtn.addEventListener('click', () => {
+      if (setMobileMode && mobileModeSelect) setMobileMode.value = mobileModeSelect.value;
+      settingsModal.classList.add('show');
+    });
+    if (closeBtn) closeBtn.addEventListener('click', close);
+    settingsModal.addEventListener('click', (e) => { if (e.target === settingsModal) close(); });
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && settingsModal.classList.contains('show')) close(); });
+    if (setPlayTarget) setPlayTarget.addEventListener('change', () => {
+      playInTab = setPlayTarget.value === 'tab';
+      applyPlayLabels();
+      if (chrome.storage && chrome.storage.local) chrome.storage.local.set({ playInTab: playInTab });
+    });
+    if (setIconCount) setIconCount.addEventListener('change', () => {
+      if (chrome.storage && chrome.storage.local) chrome.storage.local.set({ showIconCount: setIconCount.checked });
+    });
+    if (setMobileMode && mobileModeSelect) {
+      setMobileMode.addEventListener('change', () => {
+        mobileModeSelect.value = setMobileMode.value;
+        mobileModeSelect.dispatchEvent(new Event('change')); // the header selector's own handler saves it
+      });
+      mobileModeSelect.addEventListener('change', () => { setMobileMode.value = mobileModeSelect.value; });
+    }
+  }
+
+  // ▶ Play with "In a new tab": the player tab (player.html) plays the link with its Referer, next to this tab
+  function openPlayerTab(url, typeInfo, referer, poster) {
+    const isHls = url.includes('.m3u8') || url.includes('format=hls') || url.includes('format=m3u8') || url.includes('/hls/') || typeInfo.isHls;
+    const kind = typeInfo.isAudio ? 'audio' : (typeInfo.isDash ? 'dash' : (isHls ? 'hls' : 'video'));
+    const params = new URLSearchParams({
+      src: url, ref: referer || '', title: cardTitleFor(url) || '', poster: poster || '', kind: kind,
+      drm: typeInfo.isDrm ? (typeInfo.drmProvider || 'DRM') : ''
+    });
+    const page = `${chrome.runtime.getURL('player.html')}?${params.toString()}`;
+    const open = (tab) => chrome.tabs.create(tab ? { url: page, index: tab.index + 1, openerTabId: tab.id } : { url: page });
+    if (currentTabId === undefined) { open(null); return; }
+    chrome.tabs.get(currentTabId, (tab) => { open(!chrome.runtime.lastError && tab ? tab : null); });
+  }
+
   // Canonical URL Normalizer (strictly real network streams only)
   function normalizeUrl(rawUrl) {
     if (!rawUrl || typeof rawUrl !== 'string') return null;
@@ -1579,8 +1648,8 @@ document.addEventListener('DOMContentLoaded', () => {
     // 1. Video Preview Button
     const previewBtn = document.createElement('button');
     previewBtn.className = 'action-btn btn-preview';
-    previewBtn.innerHTML = '▶ Play';
-    previewBtn.title = 'Test play live stream / media in popup';
+    previewBtn.innerHTML = playLabel();
+    previewBtn.title = playTitle();
     if (typeInfo.isSegmented) previewBtn.style.display = 'none'; // a single piece is not playable on its own
     if (typeInfo.isEmbed) previewBtn.style.display = 'none'; // a player page, not a media file
 
@@ -1744,6 +1813,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Video Preview Toggle Handler with Hls.js player engine
     previewBtn.addEventListener('click', () => {
+      // Settings (⚙): "▶ Play opens: In a new tab". A preview already playing here can still be stopped.
+      if (playInTab && !previewBox) {
+        openPlayerTab(url, typeInfo, refererOf(), posterOf());
+        return;
+      }
       if (previewBox) {
         if (activeHlsPlayers.has(cardId)) {
           const hls = activeHlsPlayers.get(cardId);
@@ -1752,7 +1826,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         previewBox.remove();
         previewBox = null;
-        previewBtn.innerHTML = '▶ Play';
+        previewBtn.innerHTML = playLabel();
         previewBtn.classList.remove('active');
       } else {
         const poster = posterOf();
@@ -2336,5 +2410,6 @@ document.addEventListener('DOMContentLoaded', () => {
   // Initialize
   initTheme();
   initBestOnly();
+  initSettings();
   requestLinks();
 });

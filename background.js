@@ -35,6 +35,23 @@ if (chrome.storage && chrome.storage.local) {
   });
 }
 
+// Settings (⚙ in the popup): the number of links on the toolbar icon. On unless turned off; turning it off or
+// on again updates every tab's icon (a tab's count is read back from storage after a worker restart).
+let showIconCount = true;
+if (chrome.storage && chrome.storage.local) {
+  const applyIconCount = (on) => {
+    showIconCount = on;
+    chrome.tabs.query({}, (tabs) => (tabs || []).forEach((t) => {
+      if (!on) chrome.action.setBadgeText({ text: '', tabId: t.id }).catch(() => {});
+      else getTabLinks(t.id).then(() => updateBadge(t.id)).catch(() => {});
+    }));
+  };
+  chrome.storage.local.get({ showIconCount: true }, (res) => { if (res && res.showIconCount === false) applyIconCount(false); });
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === 'local' && changes.showIconCount) applyIconCount(changes.showIconCount.newValue !== false);
+  });
+}
+
 // STRATEGY 1: CLEAN REGEX FILTER (video, audio, subtitles - excluding .ts / .m4s transport fragments)
 const videoRegex = /\.(m3u8|mpd|m3u|mp4|webm|mkv|mov|avi|flv|m4v|ogv|wmv|3gp|f4v|mp3|aac|flac|wav|ogg|opus|m4a|vtt|srt|ttml|dfxp|sub)(\?|#|$)/i;
 
@@ -224,7 +241,7 @@ const getTabLinks = async (tabId) => {
 const updateBadge = (tabId) => {
   if (tabId < 0) return;
   const count = videoLinks.has(tabId) ? videoLinks.get(tabId).size : 0;
-  const badgeText = count > 0 ? (count > 99 ? '99+' : `${count}`) : '';
+  const badgeText = count > 0 && showIconCount ? (count > 99 ? '99+' : `${count}`) : '';
   chrome.action.setBadgeText({ text: badgeText, tabId: tabId }).catch(() => {});
   chrome.action.setBadgeBackgroundColor({ color: '#667eea', tabId: tabId }).catch(() => {});
 };
@@ -1462,3 +1479,5 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 try { importScripts('addon-worker.js'); } catch (e) { console.warn('addon-worker.js not loaded:', e); }
 // The newer add-on modules (addon2-worker.js), same rules. Optional too.
 try { importScripts('addon2-worker.js'); } catch (e) { console.warn('addon2-worker.js not loaded:', e); }
+// The player tab that ▶ Play opens when the ⚙ setting asks for it (player.html). Optional too.
+try { importScripts('player-worker.js'); } catch (e) { console.warn('player-worker.js not loaded:', e); }

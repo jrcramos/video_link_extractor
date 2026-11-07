@@ -1078,6 +1078,56 @@
       color: var(--text-muted);
       line-height: 1.4;
     }
+
+    /* Settings (⚙): same overlay as the QR code */
+    .settings-btn {
+      flex-shrink: 0;
+      font-size: 13px;
+      padding: 2px 7px;
+    }
+    .settings-modal {
+      width: 440px;
+      align-items: stretch;
+      text-align: left;
+      gap: 12px;
+    }
+    .settings-modal .qr-title {
+      max-width: none;
+      text-align: center;
+    }
+    .setting-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 8px 0;
+      border-top: 1px solid var(--border-color);
+    }
+    .setting-name {
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--text-main);
+    }
+    .setting-hint {
+      font-size: 10.5px;
+      color: var(--text-muted);
+      line-height: 1.35;
+      margin-top: 2px;
+    }
+    .setting-row .mode-select {
+      flex-shrink: 0;
+      max-width: 210px;
+    }
+    .setting-switch {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-main);
+      cursor: pointer;
+      flex-shrink: 0;
+    }
     
     .empty-state {
       text-align: center;
@@ -1158,6 +1208,7 @@
         <option value="newest">⏳ Newest</option>
         <option value="oldest">🕒 Oldest</option>
       </select>
+      <button id="settingsBtn" class="btn btn-secondary settings-btn" title="Settings">⚙</button>
       <div class="filter-pills">
         <button class="filter-pill active" data-filter="all">All <span id="filterAllCount" class="pill-badge">0</span></button>
         <button class="filter-pill" data-filter="stream">Streams <span id="filterStreamCount" class="pill-badge">0</span></button>
@@ -1185,6 +1236,43 @@
       <div class="qr-title" id="qrModalTitle">Stream QR Code</div>
       <div class="qr-canvas-box" id="qrCanvasContainer"></div>
       <div class="qr-desc">Scan with your smartphone camera to stream or download this media file.</div>
+    </div>
+  </div>
+
+  <!-- Settings (⚙) -->
+  <div id="settingsModal" class="qr-modal-overlay">
+    <div class="qr-modal settings-modal">
+      <button id="settingsCloseBtn" class="qr-close-btn" title="Close">✕</button>
+      <div class="qr-title">⚙ Settings</div>
+      <div class="setting-row">
+        <div class="setting-text">
+          <div class="setting-name">▶ Play opens</div>
+          <div class="setting-hint">Where a link plays when you press ▶ Play</div>
+        </div>
+        <select id="setPlayTarget" class="mode-select">
+          <option value="popup">In the popup</option>
+          <option value="tab">In a new tab</option>
+        </select>
+      </div>
+      <div class="setting-row">
+        <div class="setting-text">
+          <div class="setting-name">📱 Mobile scan</div>
+          <div class="setting-hint">Reads the page again as an iPhone, for sites that give phones a direct MP4. Smart: when nothing is found in 5 s. Always: on every page. Off: only when you press 📱 Mobile. Same as the selector in the header.</div>
+        </div>
+        <select id="setMobileMode" class="mode-select">
+          <option value="smart">⚡ Smart</option>
+          <option value="always">🔄 Always</option>
+          <option value="manual">⏸ Off</option>
+        </select>
+      </div>
+      <div class="setting-row">
+        <div class="setting-text">
+          <div class="setting-name">🔢 Count on the toolbar icon</div>
+          <div class="setting-hint">How many links the tab has, shown on the extension's icon</div>
+        </div>
+        <label class="setting-switch"><input type="checkbox" id="setIconCount" class="select-all-checkbox" checked /> <span>Show</span></label>
+      </div>
+      <div class="qr-desc">Saved in this browser only.</div>
     </div>
   </div>
 

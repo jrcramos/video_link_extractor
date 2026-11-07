@@ -1,4 +1,4 @@
-# Video Link Extractor Pro (v5.5)
+# Video Link Extractor Pro (v5.6)
 
 A powerful browser extension for **Chromium-based browsers** (Chrome, Edge, Brave, Opera, Vivaldi, etc.) that automatically sniffs, captures, previews, and exports streaming video and audio links from any webpage.
 
@@ -11,6 +11,7 @@ A powerful browser extension for **Chromium-based browsers** (Chrome, Edge, Brav
 ### 🎬 In-Popup Live HLS (`.m3u8`) & Media Player
 - Embedded **Hls.js engine** enables native playback of master `.m3u8` streams directly inside the Chrome popup on Windows & Linux without external player software.
 - Full video controls with audio/video stream testing.
+- Or in a tab of its own: **⚙ Settings → ▶ Play opens → In a new tab** (see *Settings*).
 
 ### 🔍 Real-Time Search & Category Filters
 - **Filter Pills**: Instant switching between `All`, `🎬 Streams` (HLS/DASH), `🎥 Videos` (MP4/WebM), `🎵 Audio` (MP3/AAC/M4A), `⏱ Short`, `💬 Subs`, `🧩 Embeds` and `🔒 DRM`.
@@ -48,6 +49,15 @@ A powerful browser extension for **Chromium-based browsers** (Chrome, Edge, Brav
 - **yt-dlp Batch (`.txt`)**: A URL list for `yt-dlp -a batch.txt`, with each stream's Referer noted as a `# Referer:` comment above it (yt-dlp reads every other line of a batch file as a URL, so headers cannot go in the file; use the per-card **yt-dlp** button for a full command with headers).
 - **VLC / MPV Playlist (`.m3u`)**: Export all captured streams as a standard `#EXTM3U` playlist.
 - **Structured JSON (`.json`)**: Full export of detected URLs, referer origins, and metadata.
+
+### ⚙ Settings
+The **⚙** button next to the sort selector opens the settings. They are kept in this browser, and each one starts as the extension worked before.
+
+| Setting | Choices |
+| :--- | :--- |
+| **▶ Play opens** | **In the popup** (default): plays on the card, as before. **In a new tab**: the Play button becomes **▶ Play ↗** and opens a player tab next to the page, with the same player (hls.js for HLS, the browser for files) and the link's Referer. Each player tab keeps its own Referer, so pressing Play on something else (in the popup or another tab) never changes what a tab that is still playing sends. |
+| **📱 Mobile scan** | **⚡ Smart** (default): when nothing is found in 5 s. **🔄 Always**: on every page. **⏸ Off**: only when you press **📱 Mobile**. The same setting as the selector in the header; changing either changes both. |
+| **🔢 Count on the toolbar icon** | On (default) / off: the number of links the tab has, on the extension's icon. |
 
 ### ⚡ Multi-Layer Deep Stream Sniffing
 1. **Network Sniffer**: Intercepts video/audio headers, manifest formats, and query signatures, including downloads whose `Content-Disposition` names a media file while the server labels them `application/octet-stream`.
@@ -137,6 +147,24 @@ Players that fetch a stream as many small numbered pieces (`seg_0001.mp4`, `chun
 
 ---
 
+## 🔐 Privacy
+
+Everything happens in your browser. The extension has no server, no account, no analytics or tracking, and loads no code from the internet: all it runs is in this folder.
+
+- **Nothing is sent to the developer or to anyone else.** The links it finds stay in your browser until you copy, export, save or play them yourself.
+- **What it keeps, and where:**
+  - the links found in each tab (and the lists of that tab's last 3 pages), in Chrome's session storage: in memory only, gone when the tab closes, when you press **Clear**, or when the browser closes;
+  - your choices (theme, ⭐ Best only, mobile scan, ⚙ settings), in the extension's local storage on this computer. Nothing uses Chrome sync.
+- **The only requests it makes itself** go to the sites the page you are on already uses, for links that page requested or named:
+  - reading a playlist, or the first 64 KB of a file, once (DRM, qualities, length), with the page's Referer and that site's cookies, as the page's own player would;
+  - a `HEAD` request for a file's size;
+  - **📱 Mobile scan**: the page itself, fetched again as an iPhone, without cookies;
+  - in the popup or a player tab: thumbnails (from the site, or YouTube's image server for YouTube embeds), and the media itself when you press **▶ Play**. **⬇ Save** goes through Chrome's own downloads.
+- **What it looks at:** the network requests your tabs make (addresses and headers), and what pages load and contain, only to pick out media links and the names the page gives them. Everything else is ignored and nothing of it is kept. That is what the `<all_urls>`, `webRequest` and `scripting` permissions are for; `declarativeNetRequest` sets the Referer for ▶ Play and for the checks above, on the extension's own requests only (never on the pages you browse), and those rules are gone when the browser closes.
+- QR codes are drawn locally (`qrcode.min.js`), and something is put on the clipboard only when you press one of the copy buttons (**Copy**, **+ Ref**, **+ Name**, **yt-dlp**, **ffmpeg**).
+
+---
+
 ## 📥 Installation
 
 1. Clone or download this repository.
@@ -158,7 +186,7 @@ The popup's ▶ Play engine is the bundled `hls.min.js` (currently **hls.js 1.7.
 
 | Button | Action |
 | :--- | :--- |
-| **▶ Play** / **⏹ Stop** | Preview live HLS stream or video file right in the popup |
+| **▶ Play** / **⏹ Stop** | Preview live HLS stream or video file right in the popup (**▶ Play ↗**: in a new tab, see *Settings*) |
 | **⬇ Save** | 1-Click direct browser download |
 | **+ Ref** | Copies `URL\|Referer` (ideal for custom batch scripts) |
 | **+ Name** | Copies `URL\|Referer\|Name`. The name is the one the page gives that video (see *A Name per Video*), else the page's (structured data, `og:title`, or the tab title without the site name), else the file name in the URL |
