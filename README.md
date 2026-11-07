@@ -1,4 +1,4 @@
-# Video Link Extractor Pro (v5.3)
+# Video Link Extractor Pro (v5.4)
 
 A powerful browser extension for **Chromium-based browsers** (Chrome, Edge, Brave, Opera, Vivaldi, etc.) that automatically sniffs, captures, previews, and exports streaming video and audio links from any webpage.
 
@@ -70,6 +70,21 @@ Five extra detection layers on top of the ones above. They only **add** links (a
 
 - Page scans (modules 2 and 3) look at the whole page once loaded and each time the popup opens, and otherwise only at what the page adds, in slices of a few milliseconds, so even a huge page that keeps changing stays responsive.
 - Links added by a module get the same `URL|Referer|Name` outputs as any other card.
+
+#### Modules 6-11 (v5.4)
+Six more layers, in their own files again (`addon2-decode.js` shared, `addon2-page.js` in the page, `addon2-content.js` next to `content.js`, `addon2-worker.js` in the background worker). Same rule: they only **add** links.
+
+| Module | Finds | Card shows |
+| :--- | :--- | :--- |
+| **6. Hidden links** | Media URLs in API responses and inline scripts that the page scanner cannot read: escaped (`https:\/\/…`, `/`), percent-encoded inside another URL (`?src=https%3A%2F%2F…m3u8`), base64 (`aHR0cHM6Ly…`), without the scheme (`//cdn/…`) or relative to the page under a player-settings key (`"file": "/v/a.mp4"`), formats it does not list (`.flac`, `.opus`, `.m4v`, `.ogv`, …), and inline scripts `content.js` skips (a player set up with a plain `.mp4`). Also downloads whose `Content-Disposition` names a `.flac` / `.opus` / `.ogv` / `.wmv` / `.3gp` / `.f4v` file. What the existing scanner finds in the same text is left out; numbered pieces of a stream are left to the segment grouping. | `🔓 Hidden link` |
+| **7. Player list** | When the popup opens, the players on the page are asked what they hold: JW Player's playlist (sources, captions) and video.js / Brightcove sources and playlists, including items not loaded yet. Read only. (hls.js, dash.js and Shaka load what they are given at once, so the existing detection already sees it.) | `🎞 Player list` |
+| **8. Blob source / Web Audio** | A whole file the page downloads and then plays from a `blob:` URL, or hands to the Web Audio API (`decodeAudioData`), traced back to the request it came from, even at an address without extension served as `application/octet-stream`. Web Audio sounds are typed Audio and get their length (so short ones land in ⏱ Short). A file the page builds itself (`new Blob([...])`, decrypted) cannot be traced. | `🧪 Blob source`, `🎚 Web Audio` |
+| **9. Blank frames** | Frames with no address of their own (`about:blank`, `srcdoc`, `blob:`), which the existing scripts never entered: players written into an empty frame, and the trick of taking an untouched `fetch` from a fresh frame. The existing page scripts and modules 1-5 now run there too, with the nearest web page as Referer. | `🪟 Blank frame` (modules 1-5 keep their own badges) |
+| **10. Messages** | Media URLs named in messages the page receives: WebSocket, `postMessage` from frames, workers, `MessageChannel`, server-sent events. Each message is looked at once, when the page reads it. | `📡 Message` |
+| **11. Player names** | The title / artist a music or podcast player gives the system media controls (Media Session), for the file that was playing: `Artist - Title`. Used by **+ Name**, **⬇ Save** and the card title only for a file the page names nothing else, and only when the page names several videos or its player named several files differently; on a page with one video the page name stays. | name only |
+
+- **Nothing found before changes.** A link the existing detection has is never touched. A link only these modules found is marked as such: the 5 s "nothing found → 📱 mobile probe" check and module 5's "stream already covered" check ignore it, so they decide exactly as before. When an existing finder (network sniffer, `content.js`, mobile probe, modules 1-3) reaches the same link later, the card is set back to what that finder would have stored (its Referer, its badge, 📱 Mobile Direct), as if it had found it first.
+- Tested in Chromium against 5.3 on test pages for every existing layer and every new module: every 5.3 link is listed with identical fields, and page code gets the same results from every function the modules wrap.
 
 ---
 

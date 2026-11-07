@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Video Link Extractor Pro",
-  "version": "5.3",
+  "version": "5.4",
   "description": "Automatically detects video/audio streams from network requests, web pages, JSON APIs, and media sources.",
   "permissions": [
     "webRequest",
@@ -31,6 +31,23 @@
       "matches": ["<all_urls>"],
       "js": ["drm-streams.js", "content.js", "addon-content.js"],
       "all_frames": true,
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["<all_urls>"],
+      "js": ["drm-streams.js", "inject.js", "addon-page.js", "addon2-decode.js", "addon2-page.js"],
+      "world": "MAIN",
+      "all_frames": true,
+      "match_about_blank": true,
+      "match_origin_as_fallback": true,
+      "run_at": "document_start"
+    },
+    {
+      "matches": ["<all_urls>"],
+      "js": ["drm-streams.js", "addon-content.js", "addon2-decode.js", "addon2-content.js"],
+      "all_frames": true,
+      "match_about_blank": true,
+      "match_origin_as_fallback": true,
       "run_at": "document_idle"
     }
   ],

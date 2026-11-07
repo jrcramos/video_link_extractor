@@ -427,7 +427,8 @@ const scheduleMobileScan = (tabId, pageUrl) => {
       mobileScanTimers.delete(tabId);
       const links = await getTabLinks(tabId);
       // If 0 videos found via standard desktop sniffing in 5 seconds, fire mobile fallback probe
-      if (links.length === 0) {
+      // (links only the newer add-on modules have found do not count: addon2-worker.js, addon.onlyNew)
+      if (links.filter((l) => !(l && l.addon && l.addon.onlyNew)).length === 0) {
         scanPageWithMobileUA(tabId, pageUrl);
       }
     }, 5000);
@@ -1459,3 +1460,5 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 // Add-on detection modules (addon-worker.js): they only add links and labels, using the functions above.
 // Optional: if the file is missing or fails, everything above works as before.
 try { importScripts('addon-worker.js'); } catch (e) { console.warn('addon-worker.js not loaded:', e); }
+// The newer add-on modules (addon2-worker.js), same rules. Optional too.
+try { importScripts('addon2-worker.js'); } catch (e) { console.warn('addon2-worker.js not loaded:', e); }

@@ -93,9 +93,12 @@
   const MSE_MIN_PIECES = 3;
   const mseStreams = new Map(); // `${tabId}|${stream}` -> { urls, mime, frameUrl, skip }
 
+  // links only the newer add-on modules have found (addon2-worker.js) do not count: this decides as before
+  const onlyNew = (e) => !!(e && e.addon && e.addon.onlyNew);
+
   const tabHasPlaylist = (tabMap) => {
     for (const e of tabMap.values()) {
-      if (e && ((e.addon && e.addon.manifest) || e.variants || (!e.segmented && MANIFEST_URL_RE.test(e.url || '')))) return true;
+      if (e && !onlyNew(e) && ((e.addon && e.addon.manifest) || e.variants || (!e.segmented && MANIFEST_URL_RE.test(e.url || '')))) return true;
     }
     return false;
   };
@@ -107,7 +110,7 @@
       if (drm.segmentInfo(u)) return true;
       const norm = normalizeUrl(u, true);
       if (!norm) return false;
-      if (tabMap.has(drm.keyFor(norm))) return true;
+      if (tabMap.has(drm.keyFor(norm)) && !onlyNew(tabMap.get(drm.keyFor(norm)))) return true;
       if (fams) for (const fam of fams.values()) if (fam.groupKey && fam.members.has(norm)) return true;
       return false;
     }) || tabHasPlaylist(tabMap);
@@ -265,4 +268,7 @@
     sendResponse({ ok: true });
     return false;
   });
+
+  // For the newer add-on modules (addon2-worker.js): the Referer a link found by an add-on gets
+  self.__VLE_ADDON_WORKER__ = Object.freeze({ refererFor: refererFor });
 })();

@@ -68,6 +68,8 @@ document.addEventListener('DOMContentLoaded', () => {
   let pageMediaNames = { exact: new Map(), byPath: new Map() };
   let topMediaNames = [];
   let frameMediaNames = [];
+  let topSessionNames = []; // add-on (module 11): media-session names, see buildMediaNames
+  let frameSessionNames = [];
 
   // "⭐ Best only" switch, remembered between popups (off by default)
   function initBestOnly() {
@@ -384,7 +386,14 @@ document.addEventListener('DOMContentLoaded', () => {
     content: ['🔎 By content', 'Recognised as a playlist by its content: neither its URL nor the server said so'],
     page: ['🔗 On page', 'The page points at this file but has not loaded it (yet)'],
     worker: ['⚙ Service worker', 'Requested by the site\'s service worker (Chrome reports those requests without a tab)'],
-    mse: ['🧪 Player buffer', 'Traced through the video player: these are the pieces it fed the browser, in order, whatever their URLs look like']
+    mse: ['🧪 Player buffer', 'Traced through the video player: these are the pieces it fed the browser, in order, whatever their URLs look like'],
+    // the newer add-on modules (addon2-*.js)
+    hidden: ['🔓 Hidden link', 'Found where the other detectors do not look or cannot read it: an escaped, percent-encoded or base64 URL, one relative to the page in the player settings, a script they skip, or a format they do not list'],
+    player: ['🎞 Player list', 'Read from the video player on the page (its playlist / sources), including items it has not loaded yet'],
+    blob: ['🧪 Blob source', 'The player downloaded this whole file and plays it from memory (a blob: URL): this is the address it came from'],
+    webaudio: ['🎚 Web Audio', 'Decoded by the page\'s Web Audio player: this is the address the sound came from'],
+    frame: ['🪟 Blank frame', 'Found inside a frame with no address of its own (about:blank, srcdoc, blob:), which the other detectors do not enter'],
+    message: ['📡 Message', 'Named in a message the page received (WebSocket, frame or worker message, server event)']
   };
   const PAGE_VIA = {
     link: 'A link on the page points at this file; the page has not loaded it.',
@@ -552,6 +561,8 @@ document.addEventListener('DOMContentLoaded', () => {
     if (url.includes('mime=video') || url.includes('/videoplayback?') || url.includes('/hls/') || url.includes('/dash/') || url.includes('format=hls') || url.includes('format=dash') || url.includes('format=m3u8') || url.includes('format=mpd')) {
       return { category: 'stream', label: 'Stream', tagClass: 'tag-stream', isStream: true, icon: '🎬' };
     }
+    // Add-on (module 8): a sound the page's audio player decoded / played from memory, at an address that does not say what it is
+    if (addon && addon.mediaKind === 'audio') return { category: 'audio', label: 'Audio', tagClass: 'tag-audio', isAudio: true, icon: '🎵' };
     return { category: 'video', label: 'Video', tagClass: 'tag-video', isVideo: true, icon: '🎥' };
   }
 
@@ -622,7 +633,11 @@ document.addEventListener('DOMContentLoaded', () => {
     let name = candidates.find(Boolean) || '';
     // "Clip Name : Free Download, ..." -> the page heading, when the title merely starts with it
     if (!ldName && h1 && h1.length >= 3 && name.length > h1.length && name.toLowerCase().startsWith(h1.toLowerCase())) name = h1;
-    return { name, siteName, mediaNames };
+    // Add-on (module 11, addon2-content.js): the names a media session gave the files it played
+    const sessionNames = Array.isArray(window.__VLE_SESSION_NAMES__)
+      ? window.__VLE_SESSION_NAMES__.slice(0, 300).filter((e) => e && typeof e.url === 'string' && typeof e.name === 'string').map((e) => ({ url: e.url, name: e.name }))
+      : [];
+    return { name, siteName, mediaNames, sessionNames };
   }
 
   // A per-video name without the noise around it: "Download Episode 5 (720p)" -> "Episode 5", "clip_01.mp4" ->
@@ -641,7 +656,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // Per-video names by URL. Structured data that names an exact file always counts. Labels, captions and link
   // text only count when the page names several videos differently (a gallery, a list of episodes): on a page
   // with one video, its page name stays the better name.
-  function buildMediaNames(lists) {
+  function buildMediaNames(lists, sessionLists = []) {
     const entries = [];
     lists.forEach((list) => (list || []).forEach((e) => { if (e && e.url && e.name) entries.push(e); }));
     const nameOf = (e) => tidyTitle(cleanMediaName(e.name), currentSiteName);
@@ -668,6 +683,28 @@ document.addEventListener('DOMContentLoaded', () => {
     conflicts.forEach((k) => byPath.delete(k));
     const names = new Map();
     exact.forEach((v, k) => names.set(k, v.name));
+
+    // Add-on (module 11): the name a music / podcast player gave a file while playing it (Media Session). Only for a
+    // file nothing above names, and only when the page names several videos (the rule above) or its player named
+    // several files differently: on a page with one video, the page name stays its name.
+    const sessionNamed = new Map();
+    sessionLists.forEach((list) => (list || []).forEach((e) => {
+      if (!e || !e.url || !e.name) return;
+      const name = nameOf(e);
+      const norm = name && normalizeUrl(e.url);
+      if (norm) sessionNamed.set(norm, name);
+    }));
+    const distinctSession = new Set(Array.from(sessionNamed.values(), (n) => n.toLowerCase()));
+    if (useLabels || distinctSession.size >= 2) {
+      sessionNamed.forEach((name, norm) => {
+        if (names.has(norm)) return;
+        try {
+          const p = new URL(norm);
+          if (byPath.has(p.origin + p.pathname)) return;
+        } catch (e) {}
+        names.set(norm, name);
+      });
+    }
     return { exact: names, byPath };
   }
 
@@ -1923,20 +1960,23 @@ document.addEventListener('DOMContentLoaded', () => {
     const tabId = currentTabId;
     chrome.scripting.executeScript({ target: { tabId: tabId }, func: readPageVideoName }, (results) => {
       if (chrome.runtime.lastError || !results || !results[0] || !results[0].result || tabId !== currentTabId) return;
-      const { name, siteName, mediaNames } = results[0].result;
+      const { name, siteName, mediaNames, sessionNames } = results[0].result;
       currentSiteName = siteName || '';
       currentVideoName = tidyTitle(name, siteName);
       topMediaNames = Array.isArray(mediaNames) ? mediaNames : [];
-      pageMediaNames = buildMediaNames([topMediaNames, frameMediaNames]);
+      topSessionNames = Array.isArray(sessionNames) ? sessionNames : [];
+      pageMediaNames = buildMediaNames([topMediaNames, frameMediaNames], [topSessionNames, frameSessionNames]);
       refreshAllCards();
     });
     chrome.scripting.executeScript({ target: { tabId: tabId, allFrames: true }, func: readPageVideoName }, (results) => {
       if (chrome.runtime.lastError || !results || tabId !== currentTabId) return;
       frameMediaNames = [];
+      frameSessionNames = [];
       results.forEach((r) => {
         if (r && r.frameId !== 0 && r.result && Array.isArray(r.result.mediaNames)) frameMediaNames.push(...r.result.mediaNames);
+        if (r && r.frameId !== 0 && r.result && Array.isArray(r.result.sessionNames)) frameSessionNames.push(...r.result.sessionNames);
       });
-      pageMediaNames = buildMediaNames([topMediaNames, frameMediaNames]);
+      pageMediaNames = buildMediaNames([topMediaNames, frameMediaNames], [topSessionNames, frameSessionNames]);
       refreshAllCards();
     });
   }
@@ -1980,6 +2020,8 @@ document.addEventListener('DOMContentLoaded', () => {
       currentVideoName = '';
       topMediaNames = [];
       frameMediaNames = [];
+      topSessionNames = [];
+      frameSessionNames = [];
       pageMediaNames = { exact: new Map(), byPath: new Map() };
     }
     if (changeInfo.title !== undefined) currentPageTitle = changeInfo.title || '';
