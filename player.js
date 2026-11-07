@@ -38,6 +38,28 @@
     return;
   }
 
+  // The card's copy buttons, copying the very same text: Copy = URL, + Ref = URL|Referer (just the URL without a
+  // Referer), + Name = URL|Referer|Name with the name + Name uses, yt-dlp = the card's command (both from the popup)
+  const actions = document.getElementById('actions');
+  const addCopy = (label, cls, title, text, done = '✓ Copied') => {
+    const b = document.createElement('button');
+    b.textContent = label;
+    b.className = cls;
+    b.title = title;
+    b.addEventListener('click', () => {
+      navigator.clipboard.writeText(text).then(() => {
+        b.textContent = done;
+        b.classList.add('copied');
+        setTimeout(() => { b.textContent = label; b.classList.remove('copied'); }, 1500);
+      }).catch(() => {});
+    });
+    actions.appendChild(b);
+  };
+  addCopy('Copy', 'b-copy', 'Copy direct URL', src, '✓ URL');
+  addCopy('+ Ref', 'b-piped', 'Copy URL and Referer (URL|Ref)', ref ? `${src}|${ref}` : src);
+  if (params.has('name')) addCopy('+ Name', 'b-piped', 'Copy URL, Referer and video name (URL|Ref|Name)', `${src}|${ref || ''}|${params.get('name')}`);
+  if (params.get('ytdlp')) addCopy('yt-dlp', 'b-ytdlp', 'Copy yt-dlp command with headers', params.get('ytdlp'), '✓ Cmd');
+
   const start = () => {
     if (kind === 'audio') {
       const audioEl = document.createElement('audio');
@@ -64,7 +86,7 @@
       if (p && typeof p.then === 'function') {
         p.catch(() => {
           videoEl.muted = true;
-          videoEl.play().catch(() => note('▶ Press play: Chrome did not let this tab start the video by itself.', false));
+          videoEl.play().catch((e) => { if (e && e.name === 'NotAllowedError') note('▶ Press play: Chrome did not let this tab start the video by itself.', false); });
         });
       }
     };

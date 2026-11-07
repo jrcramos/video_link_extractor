@@ -167,14 +167,31 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
+  // The card's yt-dlp command (the yt-dlp button, and the player tab's)
+  function ytdlpCommand(url, referer) {
+    let cmd = `yt-dlp`;
+    if (referer) {
+      try {
+        const origin = new URL(referer).origin;
+        cmd += ` --add-header "Referer: ${shellSafeUrl(referer)}" --add-header "Origin: ${shellSafeUrl(origin)}"`;
+      } catch (e) {
+        cmd += ` --add-header "Referer: ${shellSafeUrl(referer)}"`;
+      }
+    }
+    cmd += ` "${shellSafeUrl(url)}"`;
+    return cmd;
+  }
+
   // ▶ Play with "In a new tab": the player tab (player.html) plays the link with its Referer, next to this tab.
+  // It gets the card's name (as + Name copies it) and yt-dlp command too, so its copy buttons copy the very same text.
   // onFail: Chrome refused to open it (the popup stays open then): the caller plays it here instead.
   function openPlayerTab(url, typeInfo, referer, poster, onFail) {
     const isHls = url.includes('.m3u8') || url.includes('format=hls') || url.includes('format=m3u8') || url.includes('/hls/') || typeInfo.isHls;
     const kind = typeInfo.isAudio ? 'audio' : (typeInfo.isDash ? 'dash' : (isHls ? 'hls' : 'video'));
     const params = new URLSearchParams({
       src: url, ref: referer || '', title: cardTitleFor(url) || '', poster: poster || '', kind: kind,
-      drm: typeInfo.isDrm ? (typeInfo.drmProvider || 'DRM') : ''
+      drm: typeInfo.isDrm ? (typeInfo.drmProvider || 'DRM') : '',
+      name: getVideoName(url), ytdlp: ytdlpCommand(url, referer)
     });
     const page = `${chrome.runtime.getURL('player.html')}?${params.toString()}`;
     const open = (tab) => chrome.tabs.create(tab ? { url: page, index: tab.index + 1, openerTabId: tab.id } : { url: page }, (created) => {
@@ -1798,17 +1815,7 @@ document.addEventListener('DOMContentLoaded', () => {
         navigator.clipboard.writeText(ffmpegCommand(segmentPlaylistName(url), segMeta)).then(() => triggerCopied(ytdlpBtn, '✓ Cmd'));
         return;
       }
-      const referer = refererOf();
-      let cmd = `yt-dlp`;
-      if (referer) {
-        try {
-          const origin = new URL(referer).origin;
-          cmd += ` --add-header "Referer: ${shellSafeUrl(referer)}" --add-header "Origin: ${shellSafeUrl(origin)}"`;
-        } catch (e) {
-          cmd += ` --add-header "Referer: ${shellSafeUrl(referer)}"`;
-        }
-      }
-      cmd += ` "${shellSafeUrl(url)}"`;
+      const cmd = ytdlpCommand(url, refererOf());
 
       navigator.clipboard.writeText(cmd).then(() => {
         triggerCopied(ytdlpBtn, '✓ Cmd');
