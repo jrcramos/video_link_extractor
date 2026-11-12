@@ -1,4 +1,4 @@
-# Video Link Extractor Pro (v5.8)
+# Video Link Extractor Pro (v5.9)
 
 A powerful browser extension for **Chromium-based browsers** (Chrome, Edge, Brave, Opera, Vivaldi, etc.) that automatically sniffs, captures, previews, and exports streaming video and audio links from any webpage.
 
@@ -96,6 +96,27 @@ Six more layers, in their own files again (`addon2-decode.js` shared, `addon2-pa
 - **Nothing found before changes.** A link the existing detection has is never touched. A link only these modules found is marked as such: the 5 s "nothing found → 📱 mobile probe" check and module 5's "stream already covered" check ignore it, so they decide exactly as before. When an existing finder (network sniffer, `content.js`, mobile probe, modules 1-3) reaches the same link later, the card is set back to what that finder would have stored (its Referer, its badge, 📱 Mobile Direct), as if it had found it first.
 - Tested in Chromium against 5.3 on test pages for every existing layer and every new module: every 5.3 link is listed with identical fields, and page code gets the same results from every function the modules wrap.
 
+#### Modules 12-22 (v5.9)
+Eleven more layers for professional use, in their own files again (`addon3-text.js` and `addon3-parse.js` shared, `addon3-page.js` in the page, `addon3-content.js` next to `content.js`, `addon3-worker.js` in the background worker, `addon3-popup.js` in the popup). Same rule: they only **add** links, and information about links. What they learn about a link the other layers found is kept apart from the tab's list (it is never written into that link's stored fields) and only shown on its card.
+
+| Module | Finds | Card shows |
+| :--- | :--- | :--- |
+| **12. Request headers** | The headers the page sent for each listed link: `Origin`, `Cookie`, `Authorization`, custom token headers (`X-…`), … Headers the browser adds on its own (`User-Agent`, `Accept-*`, `Sec-*`, `Range`, caching) are left out. Pieces of a stream share their folder's headers. | **🔐 N headers ▾**: the list, plus **yt-dlp** / **curl** / **Headers** buttons that copy a command sending them too (the card's own yt-dlp button is unchanged) |
+| **13. WebRTC, WHEP, WebSocket media** | WebRTC connections that receive audio / video (tracks, codecs, ICE server hosts; never their passwords), the WHEP / WHIP endpoint a page posts its SDP offer to, and media streamed over a WebSocket (FLV, fragmented MP4, MPEG-TS, Ogg, WebM). None of these is a file to download. | A banner above the list: **📡 WebRTC live**, **📥 WHEP endpoint** (Copy / + Ref), **🔌 FLV over WebSocket** (Copy) |
+| **14. WebTransport, WebCodecs** | WebTransport (HTTP/3) sessions and the decoders of players that decode media themselves (WebCodecs) instead of handing a stream to the browser. | Banner: **🚀 WebTransport** (Copy), **🧮 WebCodecs player: avc1… 1920×1080** |
+| **15. Smooth Streaming, HDS** | `.ism/Manifest` and `.f4m` manifests by their address (also when the server types them as plain XML), with their qualities and length. Azure's `.ism/Manifest(format=m3u8-aapl)` / `(format=mpd-…)` are labelled HLS / DASH. | `Smooth Stream` / `HDS Stream`, **📶 N tracks ▾**, `🕒` length, `🧭 By address`; no ▶ Play (the popup's players cannot play them), yt-dlp can |
+| **16. Ads** | Files listed in VAST ad answers the page loads, files served by known ad servers (2mdn.net, doubleclick, FreeWheel, SpotX, …), and ad breaks marked inside a stream: `#EXT-X-CUE-OUT`, SCTE-35 tags / events, HLS interstitials, DASH manifests in several periods. | `📢 Ad`, `📢 N ad breaks` (ads stitched into the stream: a download includes them), `⏸ N periods`. Nothing is unticked or hidden. |
+| **17. Playlists, radio, feeds** | `.pls` / `.asx` / `.xspf` playlists and the streams they list; Icecast / SHOUTcast radio (station, bitrate and genre from its `icy-` headers; Ogg / AAC+ stations the other layers do not list); RSS / Atom feeds (podcasts) the page loads or that are opened in the tab: their enclosures. | `Playlist (.pls)`, `📃 Playlist`, `📻 Live radio · 128 kb/s`, `🎙 Feed` |
+| **18. Formats** | Codec, HDR and audio format of a stream or file: HEVC, AV1, VP9, Dolby Vision, HDR10, HLG, Dolby Atmos, E-AC-3, Opus, … From the manifest or file header the popup's one-time check already reads: no request of its own. | `🎞 HEVC · HDR10 · Atmos · E-AC-3`; the same per quality in the **📶** list |
+| **19. HLS extras** | I-frame (trick-play) and image (thumbnail) playlists, `#EXT-X-SESSION-DATA`, content steering and its CDN pathways, low-latency HLS; DASH thumbnail tiles. | `⚡ Low latency`, `🔀 Steering · 2 CDNs`, **🧰 More ▾** with Copy / + Ref / + Name for the I-frame playlists |
+| **20. DASH track addresses** | The address of each DASH track: its file (one file per track), or the list of its segments (`SegmentTemplate` with `$Number$` / `$Time$`, `SegmentTimeline`, `SegmentList`, several periods). | **🎚 N DASH tracks ▾**: Copy / + Ref / + Name for a file, else **⬇ .m3u8** (the track's segments, in order) and **ffmpeg** (the command that joins them), like a 🧩 segmented stream |
+| **21. Player services** | **🔍 Resolve** on the card of a Vimeo, JW Player, Wistia, Dailymotion, Streamable, Brightcove or Kaltura embed asks that player's own service for its streams (the request its player makes, with the page as Referer); also for a page's oEmbed description (banner). Only when you press it. | The streams as new links: `🔍 Resolved` |
+| **22. Request details, HAR** | When and how each link was first requested: time, request type, method, HTTP status, content type, frame, initiator, and the server address (from the link's next request: players ask for a stream again and again). | **🧰 More ▾** · **Export → 🧾 HAR (.har)**: the selected links' requests (cookies and tokens left out) |
+
+- The JSON export gets extra fields for these modules (`requestHeaders`, `firstRequest`, `formats`, `ad`, `radio`, `dashTracks`, `foundBy`); headers that look secret (cookies, `Authorization`, tokens) are named in `secretHeadersLeftOut`, not exported.
+- Relabelled on purpose: a `.pls` / `.asx` / `.xspf`, `.f4m` or `.ism/Manifest` link the other layers found was shown as `Video` with a ▶ Play that could not play it; it is now `Playlist (.pls)` / `HDS Stream` / `Smooth Stream` in the 🎬 Streams tab, without ▶ Play. Its stored fields and its Copy / + Ref / + Name / yt-dlp are unchanged.
+- Tested in Chromium against 5.8 with `node tests/run.js` (see *Tests*): every 5.8 link is stored with identical fields, every 5.8 card shows the same title, badges and buttons, and the JSON export keeps every 5.8 field.
+
 ---
 
 ## 🔒 DRM Detection
@@ -154,14 +175,18 @@ Everything happens in your browser. The extension has no server, no account, no 
 - **Nothing is sent to the developer or to anyone else.** The links it finds stay in your browser until you copy, export, save or play them yourself.
 - **What it keeps, and where:**
   - the links found in each tab (and the lists of that tab's last 3 pages), in Chrome's session storage: in memory only, gone when the tab closes, when you press **Clear**, or when the browser closes;
+  - for those links (modules 12, 22): the request headers the page sent (cookies and tokens included, for the 🔐 commands) and the details of their first request (time, status, server address), in the same session storage, with the same lifetime;
   - your choices (theme, ⭐ Best only, mobile scan, ⚙ settings), in the extension's local storage on this computer. Nothing uses Chrome sync.
+- **Exports** (JSON, HAR) leave cookies, `Authorization` and token headers out. Only the 🔐 panel's copy buttons copy them, when you press one.
 - **The only requests it makes itself** go to the sites the page you are on already uses, for links that page requested or named:
   - reading a playlist, or the first 64 KB of a file, once (DRM, qualities, length), with the page's Referer and that site's cookies, as the page's own player would;
   - a `HEAD` request for a file's size;
   - **📱 Mobile scan**: the page itself, fetched again as an iPhone, without cookies;
-  - in the popup or a player tab: thumbnails (from the site, or YouTube's image server for YouTube embeds), and the media itself when you press **▶ Play**. **⬇ Save** goes through Chrome's own downloads.
+  - in the popup or a player tab: thumbnails (from the site, or YouTube's image server for YouTube embeds), and the media itself when you press **▶ Play**. **⬇ Save** goes through Chrome's own downloads;
+  - **🔍 Resolve**, only when you press it: one or two requests to the service of the embedded player the page shows (Vimeo, JW Player, Wistia, Dailymotion, Streamable, Brightcove, Kaltura), or to the oEmbed address the page names, with the page as Referer and that service's cookies, as its own player would;
+  - **🎚 ⬇ .m3u8** of a DASH track: the manifest again, only if the extension's worker was restarted since the check above.
 - **What it looks at:** the network requests your tabs make (addresses and headers), and what pages load and contain, only to pick out media links and the names the page gives them. Everything else is ignored and nothing of it is kept. That is what the `<all_urls>`, `webRequest` and `scripting` permissions are for; `declarativeNetRequest` sets the Referer for ▶ Play and for the checks above, on the extension's own requests only (never on the pages you browse), and those rules are gone when the browser closes.
-- QR codes are drawn locally (`qrcode.min.js`), and something is put on the clipboard only when you press one of the copy buttons (**Copy**, **+ Ref**, **+ Name**, **yt-dlp**, **ffmpeg**).
+- QR codes are drawn locally (`qrcode.min.js`), and something is put on the clipboard only when you press one of the copy buttons (**Copy**, **+ Ref**, **+ Name**, **yt-dlp**, **ffmpeg**, and the 🔐 panel's **yt-dlp** / **curl** / **Headers**).
 
 ---
 
@@ -171,6 +196,14 @@ Everything happens in your browser. The extension has no server, no account, no 
 2. Open Chrome/Edge and go to `chrome://extensions/`.
 3. Toggle **Developer mode** in the top-right corner.
 4. Click **Load unpacked** and select this directory.
+
+### 🧪 Tests
+The `tests` folder is not used by the extension.
+
+- `node tests/unit.js`: the manifest / feed / playlist readers of modules 15-20 on the files in `tests/fixtures`.
+- `node tests/run.js`: loads the committed version (`git HEAD`) and this folder, each in its own Playwright Chromium, opens the test pages in `tests/pages` (served by `tests/server.js`) and checks that every old link is stored with identical fields, every old card shows the same, the JSON export keeps every old field, the new modules find what the pages hold (and still show it after Chrome stops the idle worker), and no script error appears. Module 21 needs the internet (it resolves a public Vimeo video). Another Chromium: `VLE_CHROME=<path to chrome.exe>`; another old version: `VLE_OLD=<folder>`.
+- `node tests/perf.js`: the same page work (300 fetch / 300 XHR answers, 3000 WebSocket messages, 200 media elements, the page load) timed with the old and the new version, taking turns; flags anything more than 15% slower.
+- `node tests/sites.js [url ...]`: real sites (needs the internet) in both versions: every old link listed by the new one too, no extension error; then 🔍 Resolve on public sample embeds of every supported player service (`tests/pages/embeds.html`).
 
 ### 🔄 Updating hls.js (manual)
 The popup's ▶ Play engine is the bundled `hls.min.js` (currently **hls.js 1.7.4**). It does not update itself, so replace it by hand every couple of months:

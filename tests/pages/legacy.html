@@ -1,0 +1,42 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Legacy layers - Test Site</title>
+  <meta property="og:title" content="Legacy Clip">
+  <meta property="og:video" content="/media/og-video.mp4">
+  <meta property="og:video:type" content="video/mp4">
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"VideoObject","name":"Structured Clip","contentUrl":"http://{{HOST}}/media/clip.mp4"}</script>
+</head>
+<body>
+  <!-- the layers the extension had before the add-on modules 12-22: their results must not change -->
+  <video id="v" src="/media/clip.mp4" poster="/media/poster.jpg" controls>
+    <track kind="subtitles" src="/fixtures/subs.vtt" srclang="en">
+  </video>
+  <a href="/media/download.mp4">Download the clip</a>
+  <div data-player='{"file":"/media/player-config.mp4"}'></div>
+  <iframe data-src="https://www.youtube.com/embed/aqz-KE-bpKQ" title="lazy embed"></iframe>
+  <iframe srcdoc="<video src='http://{{HOST}}/media/blank-frame.mp4'></video>"></iframe>
+  <script>
+    // inline player settings with an escaped URL (module 6) and a plain mp4 (content.js does not hand it over)
+    window.playerSettings = { "hls": "http:\/\/{{HOST}}\/fixtures\/escaped.m3u8", "mp4": "http://{{HOST}}/media/inline.mp4" };
+  </script>
+  <script>
+    const H = location.host;
+    fetch('/fixtures/master.m3u8');                 // network sniffer + inject.js
+    fetch('/api/stream?id=7');                      // module 1: a playlist by content
+    fetch('/fixtures/manifest.mpd');                // DASH
+    fetch('/api/video.json').then((r) => r.json()); // inject.js + module 6
+    [1, 2, 3, 4].forEach((i) => fetch(`/seg/v720/seg_${i}.mp4`)); // generic segmented stream
+    fetch('/bin/track').then((r) => r.blob()).then((b) => {      // module 8: a file played from memory
+      const a = new Audio();
+      a.src = URL.createObjectURL(b);
+      a.play().catch(() => {});
+    });
+    const ws = new WebSocket(`ws://${H}/ws`);       // module 10: a URL named in a WebSocket message
+    ws.onmessage = (e) => { void e.data; };
+    window.postMessage({ kind: 'player', src: `http://${H}/media/posted.mp4` }, '*');
+    window.addEventListener('message', (e) => { void e.data; });
+  </script>
+</body>
+</html>

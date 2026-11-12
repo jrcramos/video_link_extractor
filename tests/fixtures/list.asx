@@ -1,0 +1,7 @@
+<asx version="3.0">
+  <title>Test ASX</title>
+  <entry>
+    <title>Stream</title>
+    <ref href="/radio/asx-stream.mp3"/>
+  </entry>
+</asx>

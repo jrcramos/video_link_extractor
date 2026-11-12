@@ -1,0 +1,83 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Add-on modules 12-22 - Test Site</title>
+  <link rel="alternate" type="application/json+oembed" href="https://vimeo.com/api/oembed.json?url=https%3A%2F%2Fvimeo.com%2F76979871" title="The New Vimeo Player">
+</head>
+<body>
+  <video src="/ads/ad-720.mp4" muted></video>
+  <audio src="/radio/stream" preload="auto"></audio>
+  <iframe data-src="https://player.vimeo.com/video/76979871" title="vimeo embed"></iframe>
+  <script>
+    const H = location.host;
+    // module 12: request headers
+    document.cookie = 'vle_pref=dark; path=/';
+    fetch('/media/auth.mp4', { headers: { Authorization: 'Bearer test-token-123', 'X-Video-Token': 'abc' } });
+    // a player asks for its file again (module 22 takes the server address from a link's later requests)
+    setTimeout(() => fetch('/media/auth.mp4', { headers: { Authorization: 'Bearer test-token-123', 'X-Video-Token': 'abc' } }), 1500);
+    // modules 15, 18, 19, 20: manifests
+    fetch('/fixtures/master.m3u8');
+    fetch('/fixtures/manifest.mpd');
+    fetch('/fixtures/single.mpd');
+    fetch('/smooth/stream.ism/Manifest');
+    fetch('/ams/stream.ism/Manifest(format=m3u8-aapl)');
+    fetch('/hds/clip.f4m');
+    fetch('/media/hevc-hdr.mp4');
+    // module 16: a VAST answer (its ad file is also the <video> above)
+    fetch('/fixtures/vast.xml').then((r) => r.text());
+    // module 17: a feed and playlists
+    fetch('/fixtures/feed.xml?type=application/rss%2Bxml').then((r) => r.text());
+    fetch('/fixtures/list.pls');
+    fetch('/fixtures/list.xspf');
+    const xhr = new XMLHttpRequest();
+    xhr.open('GET', '/fixtures/list.asx?type=video/x-ms-asx');
+    xhr.send();
+    // module 13: WebSocket media, WebRTC (a loopback call with a canvas video), WHEP
+    const ws = new WebSocket(`ws://${H}/ws`);
+    ws.binaryType = 'arraybuffer';
+    ws.onmessage = () => {};
+    (async () => {
+      try {
+        const canvas = document.createElement('canvas');
+        canvas.width = 160; canvas.height = 90;
+        const ctx = canvas.getContext('2d');
+        setInterval(() => { ctx.fillStyle = `hsl(${Date.now() % 360},50%,50%)`; ctx.fillRect(0, 0, 160, 90); }, 100);
+        const stream = canvas.captureStream(10);
+        const a = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.example.test:3478', username: 'user', credential: 'secret' }] });
+        const b = new RTCPeerConnection({ iceServers: [{ urls: ['stun:stun.example.test:3478', 'turn:turn.example.test:3478?transport=udp'], username: 'user', credential: 'secret' }] });
+        a.onicecandidate = (e) => e.candidate && b.addIceCandidate(e.candidate).catch(() => {});
+        b.onicecandidate = (e) => e.candidate && a.addIceCandidate(e.candidate).catch(() => {});
+        stream.getTracks().forEach((t) => a.addTrack(t, stream));
+        await a.setLocalDescription(await a.createOffer());
+        await b.setRemoteDescription(a.localDescription);
+        await b.setLocalDescription(await b.createAnswer());
+        await a.setRemoteDescription(b.localDescription);
+        // a WHEP client: a receive-only offer posted to the endpoint
+        const w = new RTCPeerConnection();
+        w.addTransceiver('video', { direction: 'recvonly' });
+        await w.setLocalDescription(await w.createOffer());
+        fetch('/whep', { method: 'POST', headers: { 'Content-Type': 'application/sdp' }, body: w.localDescription.sdp }).catch(() => {});
+        // a data-only connection (sites use them to learn the local address): never reported
+        const d = new RTCPeerConnection();
+        d.createDataChannel('x');
+        await d.setLocalDescription(await d.createOffer());
+      } catch (e) {
+        console.log('rtc test failed', e);
+      }
+    })();
+    // module 14: WebTransport and WebCodecs
+    try {
+      const wt = new WebTransport(`https://127.0.0.1:4433/wt`);
+      wt.ready.catch(() => {});
+      wt.closed.catch(() => {});
+    } catch (e) {}
+    try {
+      const vd = new VideoDecoder({ output: () => {}, error: () => {} });
+      vd.configure({ codec: 'avc1.42001f', codedWidth: 640, codedHeight: 360 });
+      const ad = new AudioDecoder({ output: () => {}, error: () => {} });
+      ad.configure({ codec: 'opus', sampleRate: 48000, numberOfChannels: 2 });
+    } catch (e) {}
+  </script>
+</body>
+</html>

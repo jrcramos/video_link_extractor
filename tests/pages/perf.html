@@ -1,0 +1,48 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Performance - Test Site</title></head>
+<body>
+  <script>
+    // The page work the add-on hooks sit on: fetch / XHR responses (JSON, XML), WebSocket messages, media elements.
+    // tests/perf.js times it with the old and the new version.
+    window.__perf = (async () => {
+      const H = location.host;
+      const t = {};
+      await new Promise((r) => setTimeout(r, 1500)); // let the extension's scripts settle
+      let s = performance.now();
+      for (let i = 0; i < 300; i++) await fetch(`/api/video.json?i=${i}`).then((r) => r.json());
+      t.fetchJson300 = performance.now() - s;
+      s = performance.now();
+      for (let i = 0; i < 300; i++) {
+        await new Promise((res) => {
+          const x = new XMLHttpRequest();
+          x.open('GET', `/fixtures/vast.xml?i=${i}`);
+          x.onloadend = res;
+          x.send();
+        });
+      }
+      t.xhrXml300 = performance.now() - s;
+      s = performance.now();
+      await new Promise((res) => {
+        const ws = new WebSocket(`ws://${H}/ws-burst`);
+        ws.binaryType = 'arraybuffer';
+        let n = 0;
+        ws.onmessage = (e) => { void e.data; if (++n >= 3000) { ws.close(); res(); } };
+        ws.onerror = res;
+      });
+      t.wsMessages3000 = performance.now() - s;
+      s = performance.now();
+      for (let i = 0; i < 200; i++) {
+        const v = document.createElement('video');
+        v.src = `/media/clip.mp4?i=${i}`;
+        document.body.appendChild(v);
+        v.remove();
+      }
+      t.mediaElements200 = performance.now() - s;
+      const nav = performance.getEntriesByType('navigation')[0];
+      t.pageLoad = nav ? nav.loadEventEnd - nav.startTime : 0;
+      return t;
+    })();
+  </script>
+</body>
+</html>

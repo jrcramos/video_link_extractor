@@ -1252,6 +1252,8 @@ const probeUrlForDrm = async (url, referer, hop) => {
     if (whole) got = whole;
   }
   const bytes = got.bytes;
+  // Add-on (addon3-worker.js): what this check read, for the codec / ad-break / track readers. Read only.
+  if (typeof self.__VLE_X3_PROBED__ === 'function') { try { self.__VLE_X3_PROBED__(url, got, hop); } catch (e) {} }
   const lengthOf = (d) => ({ duration: d && d.seconds ? d.seconds : 0, live: !!(d && d.live) });
   if (looksTextual(bytes)) {
     let text = '';
@@ -1488,3 +1490,5 @@ try { importScripts('addon-worker.js'); } catch (e) { console.warn('addon-worker
 try { importScripts('addon2-worker.js'); } catch (e) { console.warn('addon2-worker.js not loaded:', e); }
 // The player tab that ▶ Play opens when the ⚙ setting asks for it (player.html). Optional too.
 try { importScripts('player-worker.js'); } catch (e) { console.warn('player-worker.js not loaded:', e); }
+// The third set of add-on modules (addon3-*.js, modules 12-22), same rules. Optional too.
+try { importScripts('addon3-parse.js', 'addon3-text.js', 'addon3-worker.js'); } catch (e) { console.warn('addon3 modules not loaded:', e); }

@@ -70,6 +70,8 @@ document.addEventListener('DOMContentLoaded', () => {
   let frameMediaNames = [];
   let topSessionNames = []; // add-on (module 11): media-session names, see buildMediaNames
   let frameSessionNames = [];
+  // Add-on modules 12-22 (addon3-popup.js): optional, every call to it is guarded
+  const X3 = window.__VLE_X3_POPUP__ || null;
 
   // "⭐ Best only" switch, remembered between popups (off by default)
   function initBestOnly() {
@@ -633,6 +635,10 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     // Add-on (module 1): a playlist recognised by its content, at a URL that does not say so
     const addon = addonByUrl.get(url);
+    // Add-on (modules 15, 17): Smooth Streaming / HDS manifests and .pls / .asx / .xspf playlists
+    let x3Type = null;
+    try { x3Type = X3 ? X3.mediaType(url, addon) : null; } catch (e) {}
+    if (x3Type) return x3Type;
     if (addon && addon.manifest === 'hls') return { category: 'stream', label: 'HLS Stream', tagClass: 'tag-stream', isStream: true, isHls: true, icon: '🎬' };
     if (addon && addon.manifest === 'dash') return { category: 'stream', label: 'DASH Stream', tagClass: 'tag-stream', isStream: true, isDash: true, icon: '🎬' };
     // Add-on (module 3): an embedded video platform player: a page for yt-dlp, not a file to play or save here
@@ -1502,6 +1508,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const variantsBox = document.createElement('div');
     variantsBox.className = 'variants-box';
+    let x3card = null; // add-on modules 12-22 (addon3-popup.js): their badges and panels on this card
 
     const fillTags = () => {
       const cur = latest();
@@ -1593,6 +1600,7 @@ document.addEventListener('DOMContentLoaded', () => {
       // How an add-on detection module found this link (links the existing detection found carry no badge)
       const addonBadge = buildAddonBadge(cur);
       if (addonBadge) tagRow.appendChild(addonBadge);
+      if (x3card) { try { x3card.tags(tagRow, cur); } catch (e) {} }
 
       if (cur && cur.isMobile) {
         const mobileBadge = document.createElement('span');
@@ -1638,6 +1646,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const label = document.createElement('span');
         label.className = 'variant-label';
         label.textContent = variantLabel(v);
+        if (x3card) { try { x3card.variantRow(label, v); } catch (e) {} }
         const metaEl = document.createElement('span');
         metaEl.className = 'variant-meta';
         metaEl.textContent = v.codecs || v.language || '';
@@ -1675,6 +1684,7 @@ document.addEventListener('DOMContentLoaded', () => {
     previewBtn.title = playTitle();
     if (typeInfo.isSegmented) previewBtn.style.display = 'none'; // a single piece is not playable on its own
     if (typeInfo.isEmbed) previewBtn.style.display = 'none'; // a player page, not a media file
+    if (typeInfo.noPlay) previewBtn.style.display = 'none'; // add-on: a manifest / playlist the players here cannot play
 
     // 2. Direct Download Button
     const downloadBtn = document.createElement('button');
@@ -2002,10 +2012,17 @@ document.addEventListener('DOMContentLoaded', () => {
     actionsBar.appendChild(ytdlpBtn);
     card.appendChild(actionsBar);
 
+    try {
+      x3card = X3 ? X3.card({ url, latest, refererOf, typeInfo, actionsBar }) : null;
+    } catch (e) {
+      x3card = null;
+    }
+
     showThumb();
     showTitle();
     fillTags();
     showVariants();
+    if (x3card) { try { x3card.panels(); } catch (e) {} }
 
     // false = the link changed kind (e.g. it is now a grouped stream) and the card must be rebuilt; a card with a
     // running preview is only patched
@@ -2021,6 +2038,7 @@ document.addEventListener('DOMContentLoaded', () => {
       showTitle();
       fillTags();
       showVariants();
+      if (x3card) { try { x3card.panels(); } catch (e) {} }
       return true;
     };
     const destroy = () => {
@@ -2354,7 +2372,8 @@ document.addEventListener('DOMContentLoaded', () => {
           type: typeInfo.label,
           category: typeInfo.category,
           durationSeconds: getDurationSec(item) || null,
-          extractedAt: new Date().toISOString()
+          extractedAt: new Date().toISOString(),
+          ...(() => { try { return X3 ? X3.exportFields(item) : {}; } catch (e) { return {}; } })()
         };
       });
 
@@ -2430,5 +2449,14 @@ document.addEventListener('DOMContentLoaded', () => {
   initTheme();
   initBestOnly();
   initSettings();
+  if (X3) {
+    try {
+      X3.init({
+        relayout: scheduleRelayout, tabId: () => currentTabId, links: () => currentLinks, pageUrl: () => currentPageUrl,
+        getVideoName, getMediaSize, triggerCopied, downloadBlob, shellSafeUrl, shellSafeName, getCleanFilename,
+        getSelectedLinks, formatDuration, cardTitleFor, exportMenu, exportDropdownBtn, drmBanner
+      });
+    } catch (e) {}
+  }
   requestLinks();
 });

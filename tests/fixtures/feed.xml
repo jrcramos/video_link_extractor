@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:media="http://search.yahoo.com/mrss/">
+  <channel>
+    <title>Test Podcast</title>
+    <item>
+      <title>Episode 2</title>
+      <enclosure url="/pod/episode-2.mp3?src=rss" length="12345678" type="audio/mpeg"/>
+    </item>
+    <item>
+      <title>Episode 1</title>
+      <enclosure url="https://media.example.test/pod/episode-1" length="1234" type="audio/mpeg"/>
+      <media:content url="/pod/episode-1-video.mp4" type="video/mp4" medium="video"/>
+      <media:content url="/pod/cover.jpg" type="image/jpeg" medium="image"/>
+    </item>
+  </channel>
+</rss>

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns="http://ns.adobe.com/f4m/1.0">
+  <id>clip</id>
+  <streamType>recorded</streamType>
+  <duration>95.5</duration>
+  <media url="clip_1500" bitrate="1500" width="1280" height="720"/>
+  <media url="clip_800" bitrate="800" width="854" height="480"/>
+</manifest>

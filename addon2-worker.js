@@ -43,15 +43,26 @@
     return !(seg && fams && fams.has(seg.famKey));
   };
 
+  // A link only the newest add-on modules (addon3-worker.js) have found: these modules come before them, so such a
+  // link is stored as these modules would have stored it (what the popup's check learnt about it is kept)
+  const X3_SOURCES = new Set(['stream', 'radio', 'playlist', 'feed', 'resolved']);
+  const CHECKED_FIELDS = ['drm', 'drmChecked', 'drmProbeAttempts', 'variants', 'variantsChecked', 'duration', 'live'];
+  const isX3Only = (e) => !!(e && e.addon && e.addon.onlyNew && X3_SOURCES.has(e.addon.source));
+
   // A link found by one of these modules -> a new entry labelled with its module; null when the link is known
   const addNew = async (tabId, rawUrl, frameUrl, source, label = {}, opts = {}) => {
     const url = httpUrl(rawUrl);
     if (tabId < 0 || !url) return null;
     await restoreTabLinks(tabId); // a link stored before a worker restart is known too
     const norm = normalizeUrl(url);
-    if (!norm || !canAdd(tabId, norm) || entryFor(tabId, norm) || seenByOld(tabId, norm)) return null;
+    if (!norm || !canAdd(tabId, norm) || seenByOld(tabId, norm)) return null;
+    const prior = entryFor(tabId, norm);
+    if (prior && !isX3Only(prior)) return null;
+    if (prior) videoLinks.get(tabId).delete(drm.keyFor(norm));
     addLinkToTab(tabId, norm, opts.referer || refererFor(norm, frameUrl), opts.poster || '', false, opts.size || 0, '');
     const entry = entryFor(tabId, norm);
+    if (prior && !entry) { videoLinks.get(tabId).set(drm.keyFor(norm), prior); return null; } // not taken: kept as it was
+    if (entry && prior) CHECKED_FIELDS.forEach((k) => { if (prior[k] !== undefined && entry[k] === undefined) entry[k] = prior[k]; });
     if (!entry || entry.addon || entry.segmented) return null;
     entry.addon = { ...label, source: source, onlyNew: true };
     if (opts.poster && entry.poster === opts.poster) entry.addon.ownPoster = true;
